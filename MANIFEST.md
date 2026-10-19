@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: Stage 0, Stage 1, Stage 2, and Stage 3 complete. Next: Stage 4 (change selection and `vibehard test`).
+Status: Stage 0, Stage 1, Stage 2, Stage 3, and Stage 4 complete. Next: Stage 5 (Next.js full-stack and separate-backend support).
 
 ## Goal
 
@@ -113,7 +113,10 @@ instead of hand-writing long lists.
 stores the verified declared set, a hash of each declared symbol's source
 text, the framework adapter and version, and the config hash. `vibehard test`
 trusts the lockfile only when every symbol hash still matches the base
-revision's source; otherwise it re-verifies or falls back to a full run.
+revision's source, or every hash matches the current source (a change whose
+author already re-ran `record`); a lockfile matching neither endpoint, or a
+missing lockfile, falls back to a full run. A test's selection set is its
+declared set plus its recorded `allowTransitive` observations.
 The lockfile is the artifact CI caches; the declaration in test code is the
 artifact humans review. `vibehard verify` fails if the two disagree.
 
@@ -151,14 +154,17 @@ core and version together until a real need to split appears.
    builds the observed set, diffs it against the declared set, and writes or
    checks `vibehard.lock.json`. `vibehard record` is the same run with the
    diff applied to the declaration instead of failing.
-5. Selector and runner. Computes changed symbols from `git diff <base>`:
-   changed lines intersected with symbol ranges at the base revision, plus
-   symbols in changed files that are new or deleted. Selects tests whose
-   verified set intersects changed symbols. Delegates execution to the
-   project's framework with an explicit test filter: for Playwright, a file
-   list plus `--grep` title filter as documented in its CLI reference (see
-   Sources); for Puppeteer, the host runner's name/file filter; for Cypress,
-   its spec filter. Vibehard never reimplements a test runner.
+5. Selector and runner. Computes changed symbols from `git diff <base>`
+   (working tree versus base, untracked files included): changed lines
+   intersected with symbol ranges at the base revision, plus symbols in
+   changed files that are new, deleted, or hash-changed. A non-blank changed
+   line outside every symbol is unmapped and forces a full run. Selects tests
+   whose verified set intersects changed symbols. Delegates execution to the
+   project's framework with an explicit test filter: for Playwright,
+   `file:line` positional filters (verified against `playwright test --list`
+   before running) as documented in its CLI reference (see Sources); for
+   Puppeteer, the host runner's name/file filter; for Cypress, its spec
+   filter. Vibehard never reimplements a test runner.
 
 Transitive impact rule: if symbol A changes, tests declaring A run. Tests
 declaring only callers of A do not run on that basis alone, because a caller
@@ -337,10 +343,11 @@ Gate: AT-07 through AT-12.
 ### Stage 4 — Change selection and `vibehard test`
 
 Deliverables: git-diff → changed-symbols mapping at base revision; test
-selection by set intersection; delegation to Playwright with file+`--grep`
-filter; unsafe-change detection with full-run fallback; `--dry-run` with
-per-test selection reasons; `vibehard explain`.
-Gate: AT-13 through AT-18.
+selection by set intersection; delegation to Playwright with `file:line`
+filters (checked against `--list`); unsafe-change detection with full-run
+fallback; `--dry-run` with per-test selection reasons; `vibehard explain`.
+Gate: AT-13 through AT-18. AT-17 is gated here for `fixtures/tiny-app`; its
+`examples/next-fullstack` half closes at Stage 5, when that example lands.
 
 ### Stage 5 — Next.js full-stack and separate-backend support
 
@@ -512,11 +519,13 @@ Open questions (none block Stage 0–2; each names its decision point):
   is type-checked and refactor-visible; comments only if a framework cannot
   carry options. Revisit only with Stage 3 user feedback from the examples.
 - Should `vibehard test` also select tests for symbols whose *types* changed
-  but whose bodies did not (type-only edits)? Assumption: no — e2e observes
-  runtime behavior, and the type checker owns type safety. Type-only files
-  (`.d.ts`, `import type` targets with no runtime symbol) map to no symbol;
-  whether they force the AT-15 full-run fallback is decided in Stage 4,
-  defaulting to the safe full run until proven otherwise.
+  but whose bodies did not (type-only edits)? Decided in Stage 4: no — e2e
+  observes runtime behavior, and the type checker owns type safety. Type-only
+  files (`.d.ts`, `import type` targets with no runtime symbol) map to no
+  symbol, so they are unmapped changes and force the AT-15 full-run fallback;
+  projects that disagree can `ignore` them explicitly. Changed lines outside
+  every symbol (imports, top-level code, exported constants, test support
+  files) are unmapped for the same reason.
 
 ## Sources
 
@@ -524,6 +533,8 @@ Primary sources inspected for the decisions above:
 
 - Playwright CLI reference (file and `--grep` filtering used by the runner):
   https://playwright.dev/docs/test-cli
+- Git diff reference (working-tree versus commit comparison used by the selector):
+  https://git-scm.com/docs/git-diff
 - Playwright Coverage API (browser-side executed ranges):
   https://playwright.dev/docs/api/class-coverage
 - Puppeteer Coverage API (`page.coverage` JS coverage, Istanbul note):

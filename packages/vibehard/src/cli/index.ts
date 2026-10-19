@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
 import {
+  explainProject,
+  formatExplainReport,
+  formatTestReport,
+  testProject,
+} from "../selector/index.js";
+import {
   VibehardUsageError,
   formatVerifyReport,
   recordProject,
@@ -14,8 +20,6 @@ export type Command = (typeof COMMANDS)[number];
 
 const STUB_STAGE: Partial<Record<Command, string>> = {
   init: "Stage 5",
-  test: "Stage 4",
-  explain: "Stage 4",
 };
 
 const HELP = `vibehard — exact e2e test selection
@@ -34,13 +38,19 @@ Options:
   --version    Print version
   --json       Machine-readable output (every command)
   --ci         verify: check the lockfile without writing; enforce skipVerify budget
-  --config     Path to vibehard.config (record/verify)
+  --config     Path to vibehard.config (record/verify/test/explain)
+  --base <ref> test: compare the working tree against this ref (default:
+               merge-base with the configured baseBranch, else HEAD)
+  --all        test: skip selection and run the full suite
+  --dry-run    test: print the selected tests and reasons without running
 
 record and verify accept optional filter arguments matched against
-test file paths and titles.
+test file paths and titles. explain takes one test filter or symbol ID
+(<file>#<qualified-name>) argument.
 
 Exit codes: 0 pass, 1 test failure (framework), 2 verification mismatch,
-3 usage/config error or not implemented yet.
+3 usage/config error, not implemented yet, or unsafe selection under
+--dry-run. Without --dry-run an unsafe selection runs the full suite.
 `;
 
 export interface CliResult {
@@ -55,18 +65,27 @@ export async function runCli(
 ): Promise<CliResult> {
   const json = argv.includes("--json");
   const ci = argv.includes("--ci");
+  const all = argv.includes("--all");
+  const dryRun = argv.includes("--dry-run");
   let configPath: string | undefined;
+  let baseRef: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
-    if (arg === "--json" || arg === "--ci") continue;
-    if (arg === "--config") {
-      configPath = argv[i + 1];
+    if (arg === "--json" || arg === "--ci" || arg === "--all" || arg === "--dry-run") continue;
+    if (arg === "--config" || arg === "--base") {
+      const value = argv[i + 1];
+      if (arg === "--config") configPath = value;
+      else baseRef = value;
       i += 1;
       continue;
     }
     if (arg.startsWith("--config=")) {
       configPath = arg.slice("--config=".length);
+      continue;
+    }
+    if (arg.startsWith("--base=")) {
+      baseRef = arg.slice("--base=".length);
       continue;
     }
     args.push(arg);
@@ -120,6 +139,65 @@ export async function runCli(
       const message = error instanceof Error ? error.message : String(error);
       const code = error instanceof VibehardUsageError ? error.exitCode : 3;
       return fail(code, message.startsWith("vibehard:") ? message : `vibehard ${cmd}: ${message}`, cmd);
+    }
+  }
+
+  if (cmd === "test") {
+    if (rest.some((a) => a.startsWith("-"))) {
+      return fail(3, `vibehard test: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
+    }
+    if (rest.length > 0) {
+      return fail(3, `vibehard test: unexpected argument ${rest[0]}`, cmd);
+    }
+    if ((argv.includes("--base") || argv.some((a) => a.startsWith("--base="))) && (baseRef === undefined || baseRef === "")) {
+      return fail(3, "vibehard test: --base requires a ref", cmd);
+    }
+    try {
+      const result = await testProject({
+        rootDir: options.cwd ?? process.cwd(),
+        ...(configPath !== undefined ? { configPath } : {}),
+        ...(baseRef !== undefined ? { baseRef } : {}),
+        all,
+        dryRun,
+      });
+      return {
+        exitCode: result.exitCode,
+        stdout: json
+          ? JSON.stringify({ ...result, command: cmd })
+          : formatTestReport(result),
+        stderr: "",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error instanceof VibehardUsageError ? error.exitCode : 3;
+      return fail(code, message.startsWith("vibehard:") ? message : `vibehard test: ${message}`, cmd);
+    }
+  }
+
+  if (cmd === "explain") {
+    if (rest.some((a) => a.startsWith("-"))) {
+      return fail(3, `vibehard explain: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
+    }
+    if (rest.length !== 1) {
+      return fail(3, "vibehard explain: exactly one test filter or symbol ID argument is required", cmd);
+    }
+    try {
+      const result = await explainProject({
+        rootDir: options.cwd ?? process.cwd(),
+        ...(configPath !== undefined ? { configPath } : {}),
+        query: rest[0] ?? "",
+      });
+      return {
+        exitCode: 0,
+        stdout: json
+          ? JSON.stringify({ ...result, command: cmd })
+          : formatExplainReport(result),
+        stderr: "",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error instanceof VibehardUsageError ? error.exitCode : 3;
+      return fail(code, message.startsWith("vibehard:") ? message : `vibehard explain: ${message}`, cmd);
     }
   }
 

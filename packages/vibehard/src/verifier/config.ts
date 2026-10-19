@@ -25,6 +25,10 @@ export interface VibehardConfig {
   ignore?: string[];
   testDir?: string;
   lockfile?: string;
+  /** Branch whose merge-base with HEAD is the default `vibehard test` base. */
+  baseBranch?: string;
+  /** Behavior when selection cannot be proven safe; only "full" in v1. */
+  fallback?: "full";
   playwright?: { config?: string; project?: string };
   skipVerifyBudget?: number;
   /** Map browser script URLs to generated files on disk (sibling `.map`). */
@@ -37,6 +41,7 @@ export interface ResolvedConfig {
   rootDir: string;
   configPath: string | null;
   config: VibehardConfig;
+  baseBranch: string | undefined;
   lockfilePath: string;
   /** POSIX-relative test directory prefix, or null. */
   testDirPosix: string | null;
@@ -80,6 +85,7 @@ export async function loadConfig(
     rootDir: root,
     configPath: found,
     config,
+    baseBranch: config.baseBranch,
     lockfilePath,
     testDirPosix: testDirPosix === "" ? null : testDirPosix,
     include: config.include ?? [],
@@ -108,6 +114,14 @@ async function readConfigFile(file: string): Promise<VibehardConfig> {
 
 function validateConfig(config: VibehardConfig, configPath: string | null): void {
   const where = configPath ?? "default config";
+  if (config.baseBranch !== undefined && (typeof config.baseBranch !== "string" || config.baseBranch === "")) {
+    throw new VibehardUsageError(`vibehard: baseBranch in ${where} must be a non-empty string`);
+  }
+  if (config.fallback !== undefined && config.fallback !== "full") {
+    throw new VibehardUsageError(
+      `vibehard: fallback "${String(config.fallback)}" in ${where} is not supported (only "full" in v1)`,
+    );
+  }
   if (config.framework !== "playwright") {
     throw new VibehardUsageError(
       `vibehard: framework "${config.framework}" in ${where} is not supported until Stage 6 (Stage 3 is Playwright-only)`,

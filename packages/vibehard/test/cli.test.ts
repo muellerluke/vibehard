@@ -22,7 +22,7 @@ describe("AT-01: CLI", () => {
   });
 
   it("unimplemented commands exit 3 with their stage", async () => {
-    for (const c of ["init", "test", "explain"] as const) {
+    for (const c of ["init"] as const) {
       const r = await runCli([c]);
       expect(r.exitCode).toBe(3);
       expect(r.stderr).toContain("not implemented");
@@ -38,6 +38,34 @@ describe("AT-01: CLI", () => {
       expect(r.stderr).toContain("config not found");
       expect(r.stderr).not.toContain("not implemented");
     }
+  });
+
+  it("test/explain are real commands (config error, not a stub)", async () => {
+    const empty = mkdtempSync(path.join(tmpdir(), "vibehard-cli-"));
+    tempDirs.push(empty);
+    for (const argv of [
+      ["test", "--dry-run", "--config", "missing.json"],
+      ["explain", "anything", "--config", "missing.json"],
+    ] as string[][]) {
+      const r = await runCli(argv, { cwd: empty });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("config not found");
+      expect(r.stderr).not.toContain("not implemented");
+    }
+  });
+
+  it("test rejects unknown options and stray arguments", async () => {
+    expect((await runCli(["test", "--wat"])).exitCode).toBe(3);
+    expect((await runCli(["test", "--wat"])).stderr).toContain("unknown option");
+    expect((await runCli(["test", "spec.ts"])).stderr).toContain("unexpected argument");
+    expect((await runCli(["test", "--base"])).stderr).toContain("--base requires a ref");
+  });
+
+  it("explain requires exactly one argument", async () => {
+    const none = await runCli(["explain"]);
+    expect(none.exitCode).toBe(3);
+    expect(none.stderr).toContain("exactly one");
+    expect((await runCli(["explain", "a", "b"])).exitCode).toBe(3);
   });
 
   it("unknown command exits 3", async () => {

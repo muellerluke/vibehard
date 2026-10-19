@@ -115,19 +115,33 @@ function collectSpecs(
   }
 }
 
-/** Enumerate tests with `playwright test --list --reporter=json`. */
-export async function listTests(
-  rootDir: string,
-  resolved: ResolvedConfig,
-  cliPath: string,
-): Promise<ListedTest[]> {
-  const args = [cliPath, "test", "--list", "--reporter=json"];
+/** Shared `--config`/`--project` tail for every Playwright invocation. */
+export function playwrightTailArgs(resolved: ResolvedConfig): string[] {
+  const args: string[] = [];
   if (resolved.config.playwright?.config !== undefined) {
     args.push("--config", resolved.config.playwright.config);
   }
   if (resolved.config.playwright?.project !== undefined) {
     args.push("--project", resolved.config.playwright.project);
   }
+  return args;
+}
+
+/** Enumerate tests with `playwright test --list --reporter=json`. */
+export async function listTests(
+  rootDir: string,
+  resolved: ResolvedConfig,
+  cliPath: string,
+  positionals: readonly string[] = [],
+): Promise<ListedTest[]> {
+  const args = [
+    cliPath,
+    "test",
+    ...positionals,
+    "--list",
+    "--reporter=json",
+    ...playwrightTailArgs(resolved),
+  ];
   const result = await spawnCapture(process.execPath, args, { cwd: rootDir, timeoutMs: 120_000 });
   const jsonAt = result.stdout.indexOf("{");
   if (result.exitCode !== 0 || jsonAt < 0) {
@@ -321,15 +335,36 @@ export async function runSingleTest(input: {
     "--retries=0",
     "--reporter=line",
   ];
-  if (input.resolved.config.playwright?.config !== undefined) {
-    args.push("--config", input.resolved.config.playwright.config);
-  }
-  if (input.resolved.config.playwright?.project !== undefined) {
-    args.push("--project", input.resolved.config.playwright.project);
-  }
+  args.push(...playwrightTailArgs(input.resolved));
   return spawnCapture(process.execPath, args, {
     cwd: input.rootDir,
     env: input.env,
     timeoutMs: 180_000,
+  });
+}
+
+/**
+ * Run Playwright plainly (no observation) for the given positionals:
+ * an empty list runs the full suite, `file:line` entries run exactly
+ * those tests. The project's own reporters and parallelism apply.
+ */
+export async function runPlaywrightTests(input: {
+  rootDir: string;
+  cliPath: string;
+  resolved: ResolvedConfig;
+  positionals: readonly string[];
+  env: Record<string, string>;
+  timeoutMs?: number;
+}): Promise<SpawnCaptureResult> {
+  const args = [
+    input.cliPath,
+    "test",
+    ...input.positionals,
+    ...playwrightTailArgs(input.resolved),
+  ];
+  return spawnCapture(process.execPath, args, {
+    cwd: input.rootDir,
+    env: input.env,
+    timeoutMs: input.timeoutMs ?? 1_800_000,
   });
 }

@@ -1,9 +1,41 @@
-/** Stage 4: git-diff → changed-symbols → test selection. */
-export interface SelectionResult {
-  selected: string[];
-  unsafeReason: string | null;
-}
-
-export function selectTests(_baseRef: string): Promise<SelectionResult> {
-  return Promise.reject(new Error("selector: not implemented (Stage 4)"));
-}
+export {
+  classifyChangedFile,
+  computeChangedSymbolsForFile,
+  isAppSourceFile,
+  isConfigFile,
+  isDeclarationFile,
+  parseUnifiedDiff,
+} from "./changed.js";
+export type {
+  ChangedFileKind,
+  ClassifyContext,
+  DiffHunk,
+  FileChangeInput,
+  FileChangeResult,
+  FilePatch,
+} from "./changed.js";
+export {
+  baseProjectExists,
+  createBaseWorktree,
+  diffPatch,
+  listChangedFiles,
+  resolveBase,
+  resolveGitRoot,
+} from "./git.js";
+export type { BaseWorktree, ChangedFile, ChangedFileStatus, GitRoot } from "./git.js";
+export { explainProject, formatExplainReport, formatSelectionReport, formatTestReport, testProject } from "./run.js";
+export { lockfileTrustReasons, selectTests } from "./select.js";
+export type {
+  DiscoveredTestRef,
+  ExplainOptions,
+  ExplainResult,
+  ExplainSymbolStatus,
+  ExplainTestEntry,
+  ResolvedBase,
+  SelectedTest,
+  SelectionReason,
+  SelectionResult,
+  SelectOptions,
+  TestProjectOptions,
+  TestProjectResult,
+} from "./types.js";
