@@ -1,52 +1,87 @@
 {
-  "version": 1,
+  "version": 2,
   "framework": {
     "name": "playwright",
     "version": "1.59.0"
   },
   "configHash": "aa3fb3614df5e09dd81bd0694cd1aed019f4289bb5ff4b9eb912c421e177d639",
+  "graphVersion": 2,
   "tests": {
     "e2e/app.spec.ts::order api prices an order": {
       "file": "e2e/app.spec.ts",
       "titlePath": [
         "order api prices an order"
       ],
-      "declared": [
-        "api/src/catalog.ts#findProduct",
-        "api/src/catalog.ts#priceOrder",
-        "api/src/routes.ts#createOrder"
-      ],
+      "touched": {
+        "api/src/catalog.ts#<module>": "module",
+        "api/src/catalog.ts#PRODUCTS": "referenced",
+        "api/src/catalog.ts#findProduct": "direct",
+        "api/src/catalog.ts#priceOrder": "direct",
+        "api/src/routes.ts#<module>": "module",
+        "api/src/routes.ts#createOrder": "direct",
+        "api/src/server.ts#<module>": "module",
+        "api/src/server.ts#app": "referenced",
+        "api/src/server.ts#port": "referenced",
+        "api/src/server.ts#server": "direct"
+      },
       "symbolHashes": {
+        "api/src/catalog.ts#<module>": "80d8082c3c11b49f1e75b8bd6fcf5c67c7c6e3cae05452fe778717f4fe5969e7",
+        "api/src/catalog.ts#PRODUCTS": "7f47277b189018696b846616e11aa38569a4d963868824aab88d6364a336f60a",
         "api/src/catalog.ts#findProduct": "2bc904bbedfe316521eb6bd9a7e80bc42186bf095f267202598e2d7040db89da",
         "api/src/catalog.ts#priceOrder": "c57eb59a6a563cc92047ab239a4b16b0125a3304706b09a1e931f2ac786b6f8d",
-        "api/src/routes.ts#createOrder": "43886e0eddc9e8b1a13bacc6a47221fef9c244df5f797c510ca51217037ab84f"
-      },
-      "allowTransitive": [],
-      "allowedObserved": []
+        "api/src/routes.ts#<module>": "1fd30f55e7999662f8897a591443c105c50a10a5c562eeb75a89940e7b94dce4",
+        "api/src/routes.ts#createOrder": "43886e0eddc9e8b1a13bacc6a47221fef9c244df5f797c510ca51217037ab84f",
+        "api/src/server.ts#<module>": "2f2786c0774985a69935ccf40683c3c9b70d2f319cd900e58b3f3c95ac68b009",
+        "api/src/server.ts#app": "4ce40ca08cac84de101514c66c93f4813b96a227ab9467e170514f34bcac988b",
+        "api/src/server.ts#port": "db0f4a7fbc213f9a6ec305a5cdb7ffb89aebb429871208f842d798f6b7012d41",
+        "api/src/server.ts#server": "699a3797f7a3df2b7cc9d07866c079b3c1a763661cb6f309ab83727b10586a3c"
+      }
     },
     "e2e/app.spec.ts::product page shows the api price": {
       "file": "e2e/app.spec.ts",
       "titlePath": [
         "product page shows the api price"
       ],
-      "declared": [
-        "api/src/catalog.ts#findProduct",
-        "api/src/routes.ts#getProduct",
-        "src/app/layout.tsx#RootLayout",
-        "src/app/page.tsx#ProductPage",
-        "src/lib/pricing.ts#formatPrice",
-        "src/lib/products.ts#getProduct"
-      ],
-      "symbolHashes": {
-        "api/src/catalog.ts#findProduct": "2bc904bbedfe316521eb6bd9a7e80bc42186bf095f267202598e2d7040db89da",
-        "api/src/routes.ts#getProduct": "5cd4622fe804c6451ab7323bfb5b99f503246aebf6cb5954a2bc7d3dccad60eb",
-        "src/app/layout.tsx#RootLayout": "ed38d8f8cc77fa3c9f0db08c1721ebac2216a69388d0ede4bcee14a088a93927",
-        "src/app/page.tsx#ProductPage": "13100a8161a71fa3339c40ed344edb562da98b2cc36795d5af85e76333a8abc5",
-        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298",
-        "src/lib/products.ts#getProduct": "33a297838d91989701225bb73ff294147c9c2723142ead30b33ad039b175e492"
+      "touched": {
+        "api/src/catalog.ts#<module>": "module",
+        "api/src/catalog.ts#PRODUCTS": "referenced",
+        "api/src/catalog.ts#findProduct": "direct",
+        "api/src/routes.ts#<module>": "module",
+        "api/src/routes.ts#getProduct": "direct",
+        "api/src/server.ts#<module>": "module",
+        "api/src/server.ts#app": "referenced",
+        "api/src/server.ts#port": "referenced",
+        "api/src/server.ts#server": "direct",
+        "src/app/layout.tsx#<module>": "module",
+        "src/app/layout.tsx#RootLayout": "direct",
+        "src/app/page.tsx#<module>": "module",
+        "src/app/page.tsx#ProductPage": "direct",
+        "src/app/page.tsx#dynamic": "direct",
+        "src/lib/pricing.ts#<module>": "module",
+        "src/lib/pricing.ts#formatPrice": "direct",
+        "src/lib/products.ts#<module>": "module",
+        "src/lib/products.ts#getProduct": "direct"
       },
-      "allowTransitive": [],
-      "allowedObserved": []
+      "symbolHashes": {
+        "api/src/catalog.ts#<module>": "80d8082c3c11b49f1e75b8bd6fcf5c67c7c6e3cae05452fe778717f4fe5969e7",
+        "api/src/catalog.ts#PRODUCTS": "7f47277b189018696b846616e11aa38569a4d963868824aab88d6364a336f60a",
+        "api/src/catalog.ts#findProduct": "2bc904bbedfe316521eb6bd9a7e80bc42186bf095f267202598e2d7040db89da",
+        "api/src/routes.ts#<module>": "1fd30f55e7999662f8897a591443c105c50a10a5c562eeb75a89940e7b94dce4",
+        "api/src/routes.ts#getProduct": "5cd4622fe804c6451ab7323bfb5b99f503246aebf6cb5954a2bc7d3dccad60eb",
+        "api/src/server.ts#<module>": "2f2786c0774985a69935ccf40683c3c9b70d2f319cd900e58b3f3c95ac68b009",
+        "api/src/server.ts#app": "4ce40ca08cac84de101514c66c93f4813b96a227ab9467e170514f34bcac988b",
+        "api/src/server.ts#port": "db0f4a7fbc213f9a6ec305a5cdb7ffb89aebb429871208f842d798f6b7012d41",
+        "api/src/server.ts#server": "699a3797f7a3df2b7cc9d07866c079b3c1a763661cb6f309ab83727b10586a3c",
+        "src/app/layout.tsx#<module>": "f9a18180155e02d10fcf3eb395924a6597745e364157195f711725a75de211bb",
+        "src/app/layout.tsx#RootLayout": "ed38d8f8cc77fa3c9f0db08c1721ebac2216a69388d0ede4bcee14a088a93927",
+        "src/app/page.tsx#<module>": "04355cf1a056b403e004461514c1df327b58469745c5f76bf37f1c22af5644ed",
+        "src/app/page.tsx#ProductPage": "13100a8161a71fa3339c40ed344edb562da98b2cc36795d5af85e76333a8abc5",
+        "src/app/page.tsx#dynamic": "595ec542055be42d4afa00305f820cf402da7d8bd4da4b71d03bd08f15884ebe",
+        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298",
+        "src/lib/products.ts#<module>": "ef7aca9452136a054d9e6f5c552e40ecf8b434d1c85090c4247038d90ae06184",
+        "src/lib/products.ts#getProduct": "33a297838d91989701225bb73ff294147c9c2723142ead30b33ad039b175e492"
+      }
     }
   }
 }

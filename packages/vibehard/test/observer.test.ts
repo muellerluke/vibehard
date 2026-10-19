@@ -409,6 +409,7 @@ describe("Node child coverage (server path, no browser)", () => {
     expect(result.ok).toBe(true);
     expect(result.server).toEqual([
       "src/lib/cart.ts#Cart.addItem",
+      "src/lib/cart.ts#Cart.items",
       "src/lib/format.ts#formatPrice",
     ]);
     expect(result.client).toEqual([]);
@@ -460,6 +461,7 @@ describe("Node child coverage (server path, no browser)", () => {
     expect(result.ok).toBe(true);
     expect(result.server).toEqual([
       "src/lib/cart.ts#Cart.addItem",
+      "src/lib/cart.ts#Cart.items",
       "src/lib/format.ts#formatPrice",
     ]);
   }, TIMEOUT);
@@ -509,6 +511,7 @@ describe("Node child coverage (server path, no browser)", () => {
     expect(result.ok).toBe(true);
     expect(result.server).toEqual([
       "src/lib/cart.ts#Cart.addItem",
+      "src/lib/cart.ts#Cart.items",
       "src/lib/format.ts#formatPrice",
     ]);
   }, TIMEOUT);
@@ -607,25 +610,30 @@ describe("Istanbul observation (Cypress path)", () => {
     symbols = (await indexProject(TINY_APP)).symbols;
   });
   const formatAbs = path.join(TINY_APP, "src/lib/format.ts");
-  const coverageFor = (fCount: number) => ({
-    [formatAbs]: {
-      path: formatAbs,
-      statementMap: {
-        "0": { start: { line: 1, column: 13 }, end: { line: 3, column: 1 } },
-      },
-      fnMap: {
-        "0": {
-          name: "formatPrice",
-          decl: { start: { line: 1, column: 13 }, end: { line: 1, column: 24 } },
-          loc: { start: { line: 1, column: 13 }, end: { line: 3, column: 1 } },
+  const coverageFor = (fCount: number) => {
+    const format = symbols.find((x) => x.id === "src/lib/format.ts#formatPrice");
+    const startLine = format?.startLine ?? 1;
+    const endLine = format?.endLine ?? startLine;
+    return {
+      [formatAbs]: {
+        path: formatAbs,
+        statementMap: {
+          "0": { start: { line: startLine, column: 13 }, end: { line: endLine, column: 1 } },
         },
+        fnMap: {
+          "0": {
+            name: "formatPrice",
+            decl: { start: { line: startLine, column: 13 }, end: { line: startLine, column: 24 } },
+            loc: { start: { line: startLine, column: 13 }, end: { line: endLine, column: 1 } },
+          },
+        },
+        branchMap: {},
+        s: { "0": fCount },
+        f: { "0": fCount },
+        b: {},
       },
-      branchMap: {},
-      s: { "0": fCount },
-      f: { "0": fCount },
-      b: {},
-    },
-  });
+    };
+  };
 
   it("maps executed Istanbul locations to symbols in original coordinates", () => {
     const result = observeIstanbul(coverageFor(3), { rootDir: TINY_APP, symbols });

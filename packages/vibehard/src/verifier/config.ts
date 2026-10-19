@@ -57,7 +57,7 @@ export interface VibehardConfig {
     /** Browser for `cypress run` (default: Cypress's default). */
     browser?: string;
   };
-  skipVerifyBudget?: number;
+  alwaysRunBudget?: number;
   /** Map browser script URLs to generated files on disk (sibling `.map`). */
   generatedScripts?: { urlEndsWith: string; path: string }[];
   /** Extra generated files/URL pathnames that count as app scripts. */
@@ -74,7 +74,7 @@ export interface ResolvedConfig {
   testDirPosix: string | null;
   include: string[];
   ignore: string[];
-  skipVerifyBudget: number | undefined;
+  alwaysRunBudget: number | undefined;
   configHash: string;
 }
 
@@ -117,7 +117,7 @@ export async function loadConfig(
     testDirPosix: testDirPosix === "" ? null : testDirPosix,
     include: config.include ?? [],
     ignore: config.ignore ?? [],
-    skipVerifyBudget: config.skipVerifyBudget,
+    alwaysRunBudget: config.alwaysRunBudget,
     configHash: hashConfig(config),
   };
 }

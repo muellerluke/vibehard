@@ -8,7 +8,10 @@ export type SymbolKind =
   | "method"
   | "object-method"
   | "route-export"
-  | "page-export";
+  | "page-export"
+  | "value"
+  | "module"
+  | "asset";
 
 export interface SymbolRecord {
   id: SymbolId;
@@ -19,11 +22,21 @@ export interface SymbolRecord {
   endOffset: number;
   startLine: number;
   endLine: number;
+  /** Symbol IDs this symbol statically references (resolved declarations). */
+  references?: SymbolId[];
+  /**
+   * For `module` symbols: source slices of the leftover top-level
+   * statements (imports, expression statements) whose text defines the
+   * symbol's hash. When present, hashing uses these slices instead of
+   * the full `[startOffset, endOffset)` range.
+   */
+  hashSlices?: { startOffset: number; endOffset: number }[];
 }
 
 export {
   createIndexCache,
   findEnclosingSymbol,
+  INDEXER_VERSION,
   indexProject,
 } from "./indexer/index.js";
 export type {
@@ -71,22 +84,21 @@ export type {
   V8ScriptCoverage,
 } from "./observer/index.js";
 export {
-  CodemodError,
   VibehardUsageError,
   checkLockfile,
   cypressDriver,
-  diffDeclaredObserved,
+  computeTouchedSet,
+  diffTouchedSets,
   discoverInFile,
   discoverStaticTests,
   emptyLockfile,
   encodeOnlyTitles,
-  extractDeclarations,
   filterSymbols,
   findSpecFiles,
-  formatUsesArray,
   frameworkVersion,
   getFrameworkDriver,
   hashConfig,
+  hashesForTouched,
   hashSymbolSources,
   loadConfig,
   matchGlob,
@@ -108,7 +120,6 @@ export {
   resolveCypressCli,
   resolveGeneratedPaths,
   resolvePlaywrightCli,
-  rewriteDeclaration,
   runPlaywrightTests,
   runSingleTest,
   serializeLockfile,
@@ -123,12 +134,6 @@ export {
 } from "./verifier/index.js";
 export type {
   AppServerSession,
-  DiffInput,
-  DiffResult,
-  ExtractOptions,
-  ExtractedDeclaration,
-  ExtractedSpread,
-  ExtractedUses,
   FrameworkDriver,
   FrameworkName,
   ListedTest,
@@ -136,13 +141,14 @@ export type {
   LockfileTestEntry,
   ProjectVerifyResult,
   ResolvedConfig,
-  RewriteResult,
   RunnableTestRef,
-  RuntimeDeclaration,
+  RuntimeOptions,
   ServersSession,
   SpawnCaptureResult,
   StaticDiscoveryOptions,
   TestVerifyResult,
+  TouchKind,
+  TouchedSet,
   TestVerifyStatus,
   VerifyProjectOptions,
   VibehardAppConfig,

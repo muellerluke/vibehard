@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: Stage 0, Stage 1, Stage 2, Stage 3, Stage 4, Stage 5, and Stage 6 complete. Next: Stage 7 (hardening, performance, release).
+Status: Stages 0–6 complete; the declaration-based model of those stages was then replaced by automatically recorded touched sets (see "Touched set" below; there is no declaration API). Next: Stage 7 (hardening, performance, release).
 
 ## Goal
 
@@ -16,17 +16,21 @@ test actually exercises. That mapping is normally guessed from file paths,
 tags, or import graphs, and the guesses are wrong in both directions: affected
 tests get skipped (escaped bugs) and unaffected tests get run (wasted CI time).
 
-Vibehard replaces guessing with a declared, machine-verified mapping:
+Vibehard replaces guessing with a recorded, machine-verified mapping.
+The developer declares nothing:
 
-1. Every e2e test declares the exact set of AST symbols it is allowed to
-   exercise (functions, methods, components, route handlers) in the app under
-   test, on both the client (browser) and server (Node.js) sides.
-2. `vibehard verify` runs each test under coverage instrumentation and proves
-   the declaration is exact: no declared symbol went unexercised, and no
-   undeclared app symbol was exercised. Any mismatch fails with a diff.
+1. `vibehard record` runs each test under coverage and maps every symbol
+   it touched — functions/methods/components/route handlers it executed
+   (client and server), top-level constants and other value bindings
+   those functions statically reference, each touched file's module-level
+   code, and imported data assets — into `vibehard.lock.json` with
+   per-symbol source hashes. Each test is observed twice; a touched set
+   that is not reproducible is reported unstable, never recorded.
+2. `vibehard verify` re-runs each test under coverage and fails on any
+   drift from the recorded touched set or lockfile hashes.
 3. `vibehard test` diffs the working tree (or a commit range) against a base,
    maps changed lines to changed symbols, selects exactly the tests whose
-   declared set intersects the changed set, and runs only those through the
+   touched set intersects the changed set, and runs only those through the
    project's existing e2e framework.
 
 Target frameworks (adapters, in priority order): Playwright first, Puppeteer
@@ -46,13 +50,15 @@ Target app shapes (all must work):
 
 The finished product is done when all of the following are true:
 
-- A user can install `vibehard` into each sample project in this repo, declare
-  symbols for its tests, and get a green `vibehard verify`.
-- Deliberately breaking a declaration (removing a used symbol, adding an unused
-  one, or changing app code so a test exercises a new symbol) makes
-  `vibehard verify` fail with the exact symbol-level diff.
-- Changing one app symbol and running `vibehard test` runs exactly the tests
-  that declare that symbol — verified against a ground-truth full run in the
+- A user can install `vibehard` into each sample project in this repo, run
+  `vibehard record`, and get a green `vibehard verify` — without writing
+  any symbol list.
+- Changing app code so a test touches a new symbol, or stops touching a
+  recorded one (including a top-level constant it reads via a function),
+  makes `vibehard verify` fail with the exact symbol-level drift.
+- Changing one app symbol (function, constant, module line, or imported
+  asset) and running `vibehard test` runs exactly the tests that touched
+  that symbol — verified against a ground-truth full run in the
   acceptance suite (selection recall is 100%: no affected test is ever
   skipped; precision is measured and reported, target 100% on fixtures).
 - Safety falls back to a full run, never to a partial run, whenever selection
@@ -68,57 +74,85 @@ A symbol is one addressable declaration in app source, identified by a stable
 ID of the form `<relative-file>#<qualified-name>`, for example
 `src/lib/cart.ts#Cart.addItem` or `src/app/checkout/page.tsx#CheckoutPage`.
 
-Symbol kinds indexed in v1: function declarations, arrow/function expressions
-assigned to a named binding, class declarations and their methods, React
-components (functions returning JSX are still plain function symbols; no
-special kind is needed), object-literal methods with a stable qualified name,
-and Next.js route exports (`GET`, `POST`, default page/layout exports) by
-their export name. Each symbol records its file, qualified name, kind, and
-source range (start/end offsets and lines). Anonymous inline callbacks are
-attributed to their nearest enclosing named symbol.
+Symbol kinds indexed:
+
+- Executable: function declarations, arrow/function expressions assigned to a
+  named binding, class methods/getters/setters/constructors, React
+  components (plain function symbols), object-literal methods, and Next.js
+  route/page exports by export name.
+- `value`: every top-level non-function binding (`const`/`let`/`var`), enum,
+  non-function class field, and class static block — e.g.
+  `src/lib/format.ts#CENTS_PER_DOLLAR`. Local constants inside a function
+  need no symbol; they live inside that function's range and hash.
+- `module`: one `file#<module>` per source file covering leftover top-level
+  lines (imports, expression statements, side effects, type-only
+  declarations). Its range spans the file so changed-line attribution
+  always finds a smallest symbol; its hash covers only the leftover
+  statement slices.
+- `asset`: an imported non-code file (`.json`, `.css`, images, …) as
+  `path#<file>`, hashed over the file's raw bytes.
+
+Each symbol records its file, qualified name, kind, source range, and
+`references`: the symbol IDs it statically references, resolved through the
+TypeChecker (aliases and re-exports followed to the defining declaration).
+Anonymous inline callbacks are attributed to their nearest enclosing named
+symbol. Every non-blank line of an app file belongs to exactly one smallest
+symbol — this is what makes changed-line attribution total.
 
 Invariant: symbol IDs are stable across formatting-only edits and line moves
 inside the same file. A rename or move to another file is a new symbol ID;
-`vibehard verify` surfaces it as a declaration diff instead of guessing.
+`vibehard verify` surfaces it as touched-set drift instead of guessing.
 
-### Declared set, observed set, exactness
+### Observed set, touched set, drift
 
-- Declared set: the symbols a test's author wrote down (see Declaration API).
 - Observed set: the app symbols whose source ranges were executed while that
   single test ran, collected from browser and server coverage and remapped
   through source maps to original source ranges.
-- Exactness rule (the product's central invariant): after removing symbols
-  matched by the project's `ignore` globs and the built-in exclusions below,
-  declared set must equal observed set. Missing (declared, not observed) and
-  extra (observed, not declared) are both failures.
+- Touched set: the recorded mapping for a test — its observed set plus
+  (a) the `module` symbol of every file containing an observed symbol, and
+  (b) the static-reference closure over value/module/asset symbols: every
+  constant, module, or asset reachable by following `references` from the
+  seeds through value initializers. Each entry is tagged `direct`,
+  `referenced`, `module`, or `asset`. The closure never adds an executable
+  symbol: an executable reached only by reference either ran (and is
+  already a direct seed) or did not run. Merely being named — a route
+  handler passed to `app.get(...)` at module scope — is not execution.
+- Drift rule (the product's central invariant): re-observing a test must
+  reproduce its recorded touched set exactly. Symbols touched now but not
+  recorded (`added`) and recorded but not touched now (`removed`) are both
+  `verify` failures. `record` observes each test twice and refuses to
+  write a set that differs between the two runs (`unstable`).
 
-Built-in exclusions, always applied before comparison: files under
+Built-in exclusions, always applied before mapping: files under
 `node_modules`, framework/runtime internals that have no app source file,
 generated files without source maps, and test files themselves. Everything
-else that executes from app source counts. Projects may add `ignore` globs,
-and per-test `allowTransitive` patterns (below), but there is no silent
-passthrough: an unmapped executed range in an app file is attributed to its
-enclosing symbol and therefore shows up as `extra` until declared or ignored.
+else that executes from app source counts. Projects may add `ignore` globs.
+There is no silent passthrough: executed code with no source map fails
+closed as unmappable.
 
-Known sharp edge, designed for explicitly: strict equality is brittle when a
-test legitimately pulls in shared layout/provider symbols. That is intended.
-Shared symbols must be declared (directly, or once in a shared declaration
-group imported by many tests). The `vibehard record` command (below) exists
-so authors generate the first declaration from a real run and then review it,
-instead of hand-writing long lists.
+Why the closure is sound for selection: if a change adds a *new* reference
+from a function to a constant, the function's own text changed, so the
+function is itself a changed symbol and its tests run; the next `verify`
+records the new edge as drift. Stored closures therefore cannot go stale
+in a way that skips an affected test. The known precision cost is that a
+constant read only on an untaken branch still selects the test — sound
+over precise, and auditable via the `referenced` tag in `explain`.
 
 ### Lockfile
 
-`vibehard.lock.json` at the project root is committed to git. For each test it
-stores the verified declared set, a hash of each declared symbol's source
-text, the framework adapter and version, and the config hash. `vibehard test`
-trusts the lockfile only when every symbol hash still matches the base
-revision's source, or every hash matches the current source (a change whose
-author already re-ran `record`); a lockfile matching neither endpoint, or a
-missing lockfile, falls back to a full run. A test's selection set is its
-declared set plus its recorded `allowTransitive` observations.
-The lockfile is the artifact CI caches; the declaration in test code is the
-artifact humans review. `vibehard verify` fails if the two disagree.
+`vibehard.lock.json` (format version 2) at the project root is committed to
+git. For each test it stores the recorded touched set with touch kinds, a
+SHA-256 of each touched symbol's source (exact slice for executable/value
+symbols, leftover-statement slices for `module`, raw bytes for `asset`),
+plus the framework name/version, the config hash, and the
+indexer/reference-graph version. `vibehard test` trusts the lockfile only
+when every touched hash still matches the base revision's source, or every
+hash matches the current source (a change whose author already re-ran
+`record`); a lockfile matching neither endpoint, a graph-version mismatch,
+or a missing lockfile falls back to a full run. The lockfile is the only
+mapping artifact; there is nothing to keep in sync in test code. A
+version-1 (declaration-based) lockfile is rejected with instructions to
+delete it and re-run `record`.
 
 ## Approach
 
@@ -131,13 +165,17 @@ core and version together until a real need to split appears.
 
 1. Indexer. Parses the app with the TypeScript Compiler API (`Program` +
    `TypeChecker`), which handles TS, TSX, JS, and JSX with the project's own
-   `tsconfig` module resolution. Emits the symbol table and an import graph.
-   Chosen over syntax-only parsers because cross-file qualified names and
-   re-export resolution need semantic information, and because target projects
-   already have TypeScript installed (it is a peer-level tool dep, resolved
-   from the user's project first). Evidence: TypeScript Compiler API wiki
-   (see Sources).
-2. Declaration API. How a test states its symbol set (below).
+   `tsconfig` module resolution. Emits the symbol table (all kinds above)
+   and, from the TypeChecker, each symbol's resolved `references`. Chosen
+   over syntax-only parsers because cross-file qualified names and
+   re-export resolution need semantic information, and because target
+   projects already have TypeScript installed (it is a peer-level tool dep,
+   resolved from the user's project first). Evidence: TypeScript Compiler
+   API wiki (see Sources).
+2. Touch computation. Expands one test's observed set into its touched set
+   (module rule + value/module/asset reference closure, above). There is
+   no API for a test to state its set; adapters only carry coverage and
+   the optional `alwaysRun: 'reason'` escape.
 3. Observer. Collects per-test executed ranges. Browser side: Chromium
    coverage through the framework's own coverage API — Playwright `Coverage`
    and Puppeteer `page.coverage` both expose start/stop JS coverage returning
@@ -150,29 +188,34 @@ core and version together until a real need to split appears.
    raw V8 ranges (see Sources). All paths converge on one internal form:
    executed ranges in original source files, after source-map remapping.
    Ranges are then mapped to symbols by containment in symbol ranges.
-4. Verifier. Runs each test in isolation (one test per coverage window),
-   builds the observed set, diffs it against the declared set, and writes or
-   checks `vibehard.lock.json`. `vibehard record` is the same run with the
-   diff applied to the declaration instead of failing.
+4. Verifier/recorder. Runs each test in isolation (one test per coverage
+   window) and computes its touched set. `record` observes twice, rejects
+   unstable sets, and writes `vibehard.lock.json` (never test files);
+   `verify` diffs the recomputed set against the recorded one.
 5. Selector and runner. Computes changed symbols from `git diff <base>`
-   (working tree versus base, untracked files included): changed lines
-   intersected with symbol ranges at the base revision, plus symbols in
-   changed files that are new, deleted, or hash-changed. A non-blank changed
-   line outside every symbol is unmapped and forces a full run. Selects tests
-   whose verified set intersects changed symbols. Delegates execution to the
+   (working tree versus base, untracked files included): each changed line
+   attributed to its smallest containing symbol at the matching revision,
+   plus symbols in changed files that are new, deleted, or hash-changed
+   (assets by content hash). Because every app line belongs to a symbol,
+   app-source changes are never unmapped; config/package files, unreferenced
+   assets, `.d.ts`, test-support files, and binary changes still force a
+   full run. Selects tests whose touched set intersects changed symbols,
+   plus tests whose spec file changed, `alwaysRun` tests, and unrecorded
+   tests. Delegates execution to the
    project's framework with an explicit test filter: for Playwright,
    `file:line` positional filters (verified against `playwright test --list`
    before running) as documented in its CLI reference (see Sources); for
    Puppeteer, the host runner's name/file filter; for Cypress, its spec
    filter. Vibehard never reimplements a test runner.
 
-Transitive impact rule: if symbol A changes, tests declaring A run. Tests
-declaring only callers of A do not run on that basis alone, because a caller
-that executed during verification also executed A — so A is already in that
-test's observed (and therefore declared) set. Exact verification is what
-makes direct intersection sound; no call-graph expansion is needed. The one
-exception is non-code changes (config, env, public assets, package files):
-any changed file that maps to no symbol and is not ignored forces a full run.
+Transitive impact rule: if symbol A changes, tests that touched A run. For
+executables there is no call-graph expansion at selection time: a caller
+that executed during recording also executed its callees, so they are
+already direct seeds. For values, expansion happened at record time: a
+constant read by an executed function is already in the stored touched set
+as `referenced`. Direct intersection is therefore sound for both. Changes
+that map to no symbol and are not ignored (config, env, unreferenced
+public assets, package files) force a full run.
 
 Next.js specifics: the dev/prod server is one Node process (plus workers), so
 server coverage must be collected from every child process writing to the
@@ -184,65 +227,50 @@ hook for observability setup (see Sources). Separate-backend shape: each
 server process gets its own coverage directory and a label in config; the
 observer merges all labeled outputs into the test's observed set.
 
-### Declaration API (how it should be used)
+### Test-code surface
 
-Primary form, per framework adapter, in test code next to the test:
-
-Playwright (fixture/wrapper over `test`):
+There is no declaration API. Specs import the adapter's test entry point
+only so coverage can be collected; test bodies are unchanged:
 
 ```ts
 import { test } from 'vibehard/playwright';
 
-test('checkout applies a coupon', {
-  uses: [
-    'src/app/checkout/page.tsx#CheckoutPage',
-    'src/lib/cart.ts#Cart.applyCoupon',
-    'src/app/api/coupons/route.ts#POST',
-  ],
-}, async ({ page }) => { /* existing test body, unchanged */ });
+test('checkout applies a coupon', async ({ page }) => { /* ... */ });
 ```
 
-Puppeteer (no bundled runner): a `describeTest` helper for the host runner
-plus a `withVibehardPage(browser, { uses })` wrapper that starts/stops
-`page.coverage` around the test. Host runner choice is an open question
-below; the adapter must work with at least Node's built-in test runner.
+Puppeteer: `describeTest(title, fn)` for the host runner (Node's built-in
+test runner) plus `withVibehardPage(browser)` so coverage starts before
+navigation. Cypress: `registerVibehardSupport()` in the support file and
+`registerVibehardTasks(on)` in `setupNodeEvents`; specs contain no
+vibehard calls at all.
 
-Cypress: a `vibehard.uses([...])` call registered in support code, keyed by
-the current test title, with coverage read from the instrumented app.
-
-Shared groups, to keep common layout/auth symbols declare-once:
-
-```ts
-// e2e/uses.ts
-export const appShell = ['src/app/layout.tsx#RootLayout', /* ... */];
-// in a test: uses: [...appShell, 'src/lib/cart.ts#Cart.applyCoupon']
-```
-
-Per-test escapes, explicit and audited in the lockfile: `allowTransitive:
-['src/lib/analytics/**']` (observed matches permitted, still recorded) and
-`skipVerify: 'reason'` (test always runs under `vibehard test`; counted and
-printed in every report). No other implicit leniency exists.
+The sole per-test option, explicit and audited in the lockfile:
+`alwaysRun: 'reason'` (Cypress: an `alwaysRun('reason')` call in the test
+body). Such a test is never recorded, always runs under `vibehard test`,
+and is counted against the `--ci` budget (`alwaysRunBudget`, default 0).
+It exists for genuinely unstable tests — the only remaining leniency.
 
 ### CLI
 
 - `vibehard init` — detect framework and app shape, write `vibehard.config`,
   print the minimal wiring diff for the detected framework.
-- `vibehard record [filter]` — run tests under observation, (re)write their
-  declarations from observed sets, update the lockfile. This is how existing
-  suites adopt Vibehard.
+- `vibehard record [filter]` — run tests under observation (twice each),
+  map touched symbols, update the lockfile. This is how suites adopt
+  Vibehard, and how mappings are refreshed after intentional behavior changes.
 - `vibehard verify [--ci]` — run tests under observation, fail on any
-  missing/extra symbol or lockfile drift. `--ci` also fails on any
-  `skipVerify` count above the configured budget (default: no budget).
+  touched-set drift or lockfile hash drift. `--ci` also fails on any
+  `alwaysRun` count above `alwaysRunBudget` (default: 0).
 - `vibehard test [--base <ref>] [--all] [--dry-run]` — select and run only
   affected tests. Default base: merge-base with the configured base branch,
   falling back to `HEAD`. `--all` skips selection and runs the full suite.
   `--dry-run` prints the selected set and the symbol-level reason for each
   selection without running.
-- `vibehard explain <test|symbol>` — show declared vs last observed set for a
-  test, or which tests declare a symbol. Debugging surface; no run required.
+- `vibehard explain <test|symbol>` — show the recorded touched set (with
+  touch kinds) for a test, or which tests touched a symbol. Debugging
+  surface; no run required.
 
 Exit codes: `0` pass/selected-and-passed, `1` test failure passed through
-from the framework, `2` verification mismatch, `3` selection unsafe under
+from the framework, `2` verification drift or unstable record, `3` selection unsafe under
 `--dry-run`. Without `--dry-run`, an unsafe selection performs a full run and
 that run's result determines the exit code (`0` or `1`), with the unsafe
 reason printed. Machine-readable `--json` on every command.
@@ -326,8 +354,9 @@ Gate: AT-01.
 
 ### Stage 1 — Symbol indexer
 
-Deliverables: TypeScript-Compiler-API indexer producing the symbol table and
-import graph for TS/TSX/JS/JSX; stable symbol IDs; enclosing-symbol lookup
+Deliverables: TypeScript-Compiler-API indexer producing the symbol table
+(all symbol kinds, including value/module/asset) and per-symbol reference
+graph for TS/TSX/JS/JSX; stable symbol IDs; enclosing-symbol lookup
 for arbitrary ranges; index cache keyed by file content hash.
 Gate: AT-02, AT-03, AT-04.
 
@@ -339,11 +368,12 @@ to original ranges; range→symbol mapping; merged client+server observed set
 for one manually driven page load against `fixtures/tiny-app`.
 Gate: AT-05, AT-06.
 
-### Stage 3 — Declaration API and verifier (Playwright)
+### Stage 3 — Recorder and verifier (Playwright)
 
-Deliverables: `vibehard/playwright` test wrapper with `uses`, shared groups,
-`allowTransitive`, `skipVerify`; per-test isolated verification runs;
-missing/extra diff reporting; `vibehard record` and `vibehard verify`;
+Deliverables: `vibehard/playwright` test wrapper for coverage attribution
+(no declaration to write; `alwaysRun` is the only option); per-test
+isolated runs; touched-set computation; `vibehard record` (twice-observed,
+unstable sets rejected) and `vibehard verify` (drift reporting);
 `vibehard.lock.json` write/check with symbol source hashes.
 Gate: AT-07 through AT-12.
 
@@ -360,7 +390,7 @@ Gate: AT-13 through AT-18. AT-17 is gated here for `fixtures/tiny-app`; its
 
 Deliverables: multi-process server coverage merge; Next.js wiring guide and
 `vibehard init` detection for Next (App + Pages); `examples/next-fullstack`
-and `examples/next-express` fully wired with verified declarations; server
+and `examples/next-express` fully wired with recorded lockfiles; server
 components, route handlers, and server actions covered by fixture tests.
 Gate: AT-19, AT-20, AT-21.
 
@@ -369,7 +399,7 @@ Gate: AT-19, AT-20, AT-21.
 Deliverables: `vibehard/puppeteer` (page-coverage wrapper, Node test runner
 host support) with `examples/plain-puppeteer`; `vibehard/cypress`
 (instrumented-coverage path) with `examples/next-cypress`; adapter conformance
-suite so all adapters pass the same declaration/verify/select scenarios.
+suite so all adapters pass the same record/verify/select scenarios.
 Gate: AT-22, AT-23, AT-24.
 
 ### Stage 7 — Hardening, performance, release
@@ -394,7 +424,8 @@ Foundation:
 - AT-01: clean checkout → install → build → `vibehard --help` exits 0; unit
   test runner executes.
 - AT-02: indexer on `fixtures/tiny-app` returns exactly the ground-truth
-  symbol table (IDs, kinds, ranges), including a class method, an arrow
+  symbol table (IDs, kinds, ranges, references), including a class method,
+  a class field, a top-level constant, per-file module symbols, an arrow
   function binding, a JSX component, and a route export.
 - AT-03: reformatting and moving code within files does not change any
   symbol ID; renaming a function changes exactly its own ID.
@@ -411,21 +442,25 @@ Observation:
 
 Verification (Playwright first; repeated per adapter in Stage 6):
 
-- AT-07: a test whose declaration equals its observed set passes verify.
-- AT-08: removing one used symbol from a declaration fails verify, naming
-  that symbol as `extra` (observed, not declared).
-- AT-09: adding one unused symbol fails verify, naming it as `missing`.
-- AT-10: changing app code so the test exercises one new symbol (declaration
-  untouched) fails verify as `extra`. This is the core promise; it must fail.
-- AT-11: `vibehard record` on an undeclared test writes a declaration that
-  then passes verify unchanged; recording twice is a no-op diff.
-- AT-12: tampering with `vibehard.lock.json` (or editing a declared symbol's
+- AT-07: a test whose recomputed touched set equals its recorded set
+  passes verify.
+- AT-08: removing one touched symbol from the lockfile fails verify as
+  drift, naming that symbol as `added` (touched now, not recorded).
+- AT-09: adding one untouched symbol to the lockfile fails verify as
+  drift, naming it as `removed` (recorded, not touched now).
+- AT-10: changing app code so the test touches one new symbol fails verify
+  as drift (`added`). This is the core promise; it must fail.
+- AT-11: `vibehard record` writes the lockfile from real runs without
+  modifying any spec file, and the result then passes verify; recording
+  twice produces an identical lockfile.
+- AT-12: tampering with `vibehard.lock.json` (or editing a touched symbol's
   source without re-verifying) is detected by hash mismatch.
 
 Selection:
 
-- AT-13: changing one symbol's body selects exactly the tests declaring it
-  (set equality against ground truth, checked via `--dry-run` JSON).
+- AT-13: changing one symbol (function body, top-level constant, or module
+  line) selects exactly the tests that touched it, with the correct touch
+  kind in the reason (checked via `--dry-run` JSON).
 - AT-14: a whitespace-only change inside a symbol selects its tests (source
   hash changed) — selection is conservative, never clever about semantics.
 - AT-15: changing a non-code tracked file (config/env/public asset) forces a
@@ -437,16 +472,16 @@ Selection:
   `fixtures/tiny-app` and `examples/next-fullstack`, the selected set is a
   superset of the tests that fail or change observed set in a full run.
   Skipping an affected test anywhere fails this test.
-- AT-18: deleting a symbol that tests declare selects those tests (they must
+- AT-18: deleting a symbol that tests touched selects those tests (they must
   fail or be re-recorded), not zero tests.
 
 App shapes:
 
 - AT-19: `examples/next-fullstack` — a server-component change, a
   client-component change, a route-handler change, and a server-action
-  change each select exactly their declaring tests.
+  change each select exactly their touching tests.
 - AT-20: `examples/next-express` — a change in the Express API selects the
-  frontend e2e tests that declare the API symbol; frontend-only change does
+  frontend e2e tests that touched the API symbol; frontend-only change does
   not select API-only tests.
 - AT-21: Next.js running with its production build (not only `dev`) still
   maps coverage through source maps to the same symbol sets.
@@ -457,14 +492,14 @@ Adapters:
   `examples/plain-puppeteer`.
 - AT-23: Cypress adapter passes AT-07–AT-10 equivalents on
   `examples/next-cypress` via the instrumented-coverage path.
-- AT-24: the same declared sets verify identically under Playwright and
+- AT-24: the same touched sets verify identically under Playwright and
   Puppeteer for the shared fixture app (adapter conformance).
 
 Hardening:
 
-- AT-25: running verify twice on an unchanged tree produces identical
-  observed sets, or the differing test is reported as unstable with both
-  sets shown (never silently accepted).
+- AT-25: `record` observes each test twice; differing touched sets are
+  reported as unstable with the differing symbols shown and nothing
+  written for that test (never silently recorded).
 - AT-26: parallel verification (≥4 workers) produces the same results as
   serial verification on the example suites.
 - AT-27: `vibehard test` on `examples/next-fullstack` with a one-symbol
@@ -485,8 +520,7 @@ Commands are workspace scripts once Stage 0 lands; CI runs the same lines.
   AT-20) in CI with browsers installed.
 - Highest-risk validation step: AT-17 (recall audit) together with AT-05.
   If observed sets are wrong, everything downstream is unsound, so Stage 2
-  is gated on exact ground-truth equality — not percentages — before any
-  declaration work begins.
+  is gated on exact ground-truth equality — not percentages.
 - Manual checks that cannot be automated cheaply: README adoption walkthrough
   on a fresh machine (init → record → verify) before the Stage 7 release.
 
@@ -494,18 +528,20 @@ Commands are workspace scripts once Stage 0 lands; CI runs the same lines.
 
 Risks, with the designed mitigation:
 
-- Exact-equality friction: shared providers/layouts inflate declarations.
-  Mitigation is `record` + shared groups + `allowTransitive`; if real suites
-  still drown, that is product feedback to answer with better grouping, not
-  by weakening equality silently.
+- Large touched sets: shared providers/layouts make many tests touch the
+  same symbols, weakening selection precision for those symbols. That is
+  honest signal (a layout change really can affect every page), made
+  auditable by `explain`; the remedy is smaller shared modules, not
+  weakening the mapping silently.
 - Source-map gaps (some bundlers/minifiers, server-only transforms) make
   ranges unmappable. Mitigation: fail closed (AT-06) and document required
   build settings per stack; never approximate a mapping.
 - Non-deterministic execution (timers, A/B branches, lazy chunks) makes
-  observed sets unstable. Mitigation: AT-25 instability reporting and
-  per-test isolation; unstable tests must be fixed or `skipVerify`-budgeted.
+  touched sets unstable. Mitigation: record-twice instability reporting
+  (AT-25) and per-test isolation; unstable tests must be fixed or marked
+  `alwaysRun` within the configured budget.
 - Multi-process Next.js/worker coverage loss would under-report server
-  symbols (false `missing`, and worse, missed selection). Mitigation:
+  symbols (false drift, and worse, missed selection). Mitigation:
   merge every process's coverage output; AT-19/AT-21 assert server symbols.
 - Dynamic `import()` and code splitting: symbols in lazy chunks still map
   through source maps, but a chunk that never loads in verify and loads in
@@ -513,8 +549,8 @@ Risks, with the designed mitigation:
   bug. Documented, not hidden.
 - Firefox/WebKit browser coverage: inspected coverage APIs are Chromium
   (CDP) based. v1 verification runs on Chromium only; other browser projects
-  still run under `vibehard test` selection, but their declarations are
-  verified from the Chromium run. Stated in docs, revisited post-v1.
+  still run under `vibehard test` selection, but their touched sets are
+  recorded and verified from the Chromium run. Stated in docs.
 
 Open questions (none block Stage 0–2; each names its decision point):
 
@@ -528,18 +564,25 @@ Open questions (none block Stage 0–2; each names its decision point):
   webpack + `babel-plugin-istanbul` (`next build --webpack`, forced
   server source maps) because the Turbopack production build admits
   no Istanbul route — see `examples/next-cypress`.
-- Declaration syntax: wrapper options object (chosen above for Playwright)
-  vs annotation comments. Assumption: options object is primary because it
-  is type-checked and refactor-visible; comments only if a framework cannot
-  carry options. Revisit only with Stage 3 user feedback from the examples.
+- Mapping model: superseded. Stages 0–6 shipped author-written `uses`
+  declarations with exact declared==observed verification; the model was
+  then replaced by automatically recorded touched sets because (a) every
+  declaration was in practice machine-generated by `record` anyway, and
+  (b) functions were the only indexed symbols, so constants, imports, and
+  module-level code that tracked functions read were untracked and every
+  such change forced a full run. The recorded model keeps the soundness
+  argument (drift detection + two-endpoint hash trust + fail-closed
+  fallback) with no per-test authoring. Selection soundness for newly
+  added references is argued under "Touched set" above.
 - Should `vibehard test` also select tests for symbols whose *types* changed
   but whose bodies did not (type-only edits)? Decided in Stage 4: no — e2e
   observes runtime behavior, and the type checker owns type safety. Type-only
   files (`.d.ts`, `import type` targets with no runtime symbol) map to no
   symbol, so they are unmapped changes and force the AT-15 full-run fallback;
-  projects that disagree can `ignore` them explicitly. Changed lines outside
-  every symbol (imports, top-level code, exported constants, test support
-  files) are unmapped for the same reason.
+  projects that disagree can `ignore` them explicitly. (Imports, top-level
+  code, and exported constants are no longer outside the symbol universe:
+  they are `module`/`value` symbols and select precisely. Test support
+  files remain unmapped by design.)
 
 ## Sources
 

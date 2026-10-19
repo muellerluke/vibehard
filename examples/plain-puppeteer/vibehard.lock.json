@@ -1,52 +1,77 @@
 {
-  "version": 1,
+  "version": 2,
   "framework": {
     "name": "puppeteer",
     "version": "24.43.1"
   },
   "configHash": "cff18691a3324bba7a674c6fb64a875646d44deb057a4bf216fa9a944b090723",
+  "graphVersion": 2,
   "tests": {
     "e2e/app.test.mjs::home page shows the cart total": {
       "file": "e2e/app.test.mjs",
       "titlePath": [
         "home page shows the cart total"
       ],
-      "declared": [
-        "src/lib/cart.ts#Cart.addItem",
-        "src/lib/cart.ts#Cart.totalCents",
-        "src/lib/pricing.ts#formatPrice",
-        "src/page.ts#renderHome",
-        "src/server.ts#routeRequest"
-      ],
-      "symbolHashes": {
-        "src/lib/cart.ts#Cart.addItem": "da80fc7a449970beaf45a1d084221517c02006d0aa30b30d32eab93cbaee867c",
-        "src/lib/cart.ts#Cart.totalCents": "b66cb82df764a7b9faae5252202a16a3d8138a8323cb83fc90d440e59df72c5e",
-        "src/lib/pricing.ts#formatPrice": "7cf4338bc863f7b1044859cf5a427c551062722d40d7a96306b0276c9ca30750",
-        "src/page.ts#renderHome": "e9b8c5bcd72805658a03d7c4541d164ee76a5997442eb2138d3e04ee0b8c82bf",
-        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd"
+      "touched": {
+        "src/lib/cart.ts#<module>": "module",
+        "src/lib/cart.ts#Cart.addItem": "direct",
+        "src/lib/cart.ts#Cart.items": "direct",
+        "src/lib/cart.ts#Cart.totalCents": "direct",
+        "src/lib/pricing.ts#<module>": "module",
+        "src/lib/pricing.ts#formatPrice": "direct",
+        "src/page.ts#<module>": "module",
+        "src/page.ts#renderHome": "direct",
+        "src/server.ts#<module>": "module",
+        "src/server.ts#clientBundle": "referenced",
+        "src/server.ts#port": "referenced",
+        "src/server.ts#routeRequest": "direct",
+        "src/server.ts#server": "direct"
       },
-      "allowTransitive": [],
-      "allowedObserved": []
+      "symbolHashes": {
+        "src/lib/cart.ts#<module>": "7f41389714a5a8eaa3d43132965ea02c76c56ee00f9b1b18942108a5ca68ba66",
+        "src/lib/cart.ts#Cart.addItem": "da80fc7a449970beaf45a1d084221517c02006d0aa30b30d32eab93cbaee867c",
+        "src/lib/cart.ts#Cart.items": "1bc04f6f9d9f7bbba612bcedd8b2cb4e054ea2544f54f667246a8d77d5f63ea7",
+        "src/lib/cart.ts#Cart.totalCents": "b66cb82df764a7b9faae5252202a16a3d8138a8323cb83fc90d440e59df72c5e",
+        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "src/lib/pricing.ts#formatPrice": "7cf4338bc863f7b1044859cf5a427c551062722d40d7a96306b0276c9ca30750",
+        "src/page.ts#<module>": "b4e7f376f3b7d18f21d8f5d3ebaf47f4220b23a2c3ad7ed3b057b48a86c40134",
+        "src/page.ts#renderHome": "e9b8c5bcd72805658a03d7c4541d164ee76a5997442eb2138d3e04ee0b8c82bf",
+        "src/server.ts#<module>": "182dfeebbda0facf2afc48f5d92e2febc63729520720cbd49acf907798e117ce",
+        "src/server.ts#clientBundle": "4e5f5c700ce7d35f7fbf03a7aae65033b78a5a153570034b357081d8cf5915c1",
+        "src/server.ts#port": "15a047196a4351f94e1d6a7de2ff0fbea0888318b9df33a4b4734f5782b0b74d",
+        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd",
+        "src/server.ts#server": "df29857506df9ad3f272f19a01e2a165917301ef89609895fd3687865539eaa2"
+      }
     },
     "e2e/app.test.mjs::price api applies a discount": {
       "file": "e2e/app.test.mjs",
       "titlePath": [
         "price api applies a discount"
       ],
-      "declared": [
-        "src/api.ts#priceHandler",
-        "src/lib/pricing.ts#applyDiscount",
-        "src/lib/pricing.ts#formatPrice",
-        "src/server.ts#routeRequest"
-      ],
+      "touched": {
+        "src/api.ts#<module>": "module",
+        "src/api.ts#priceHandler": "direct",
+        "src/lib/pricing.ts#<module>": "module",
+        "src/lib/pricing.ts#applyDiscount": "direct",
+        "src/lib/pricing.ts#formatPrice": "direct",
+        "src/server.ts#<module>": "module",
+        "src/server.ts#clientBundle": "referenced",
+        "src/server.ts#port": "referenced",
+        "src/server.ts#routeRequest": "direct",
+        "src/server.ts#server": "direct"
+      },
       "symbolHashes": {
+        "src/api.ts#<module>": "b547bf6e19226d41b64fecfaaed02e4a9be995e448757132d792b0e0ebb4d6d5",
         "src/api.ts#priceHandler": "fe79b5cee1f488c44cee6f5684a343eea21919191dbc950f4e1b5d6a4ce1fd94",
+        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "src/lib/pricing.ts#applyDiscount": "bae4fbd6567d8fc65bcae2bef5d2835c9a6a35daf42a2f71d789e33f98a60979",
         "src/lib/pricing.ts#formatPrice": "7cf4338bc863f7b1044859cf5a427c551062722d40d7a96306b0276c9ca30750",
-        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd"
-      },
-      "allowTransitive": [],
-      "allowedObserved": []
+        "src/server.ts#<module>": "182dfeebbda0facf2afc48f5d92e2febc63729520720cbd49acf907798e117ce",
+        "src/server.ts#clientBundle": "4e5f5c700ce7d35f7fbf03a7aae65033b78a5a153570034b357081d8cf5915c1",
+        "src/server.ts#port": "15a047196a4351f94e1d6a7de2ff0fbea0888318b9df33a4b4734f5782b0b74d",
+        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd",
+        "src/server.ts#server": "df29857506df9ad3f272f19a01e2a165917301ef89609895fd3687865539eaa2"
+      }
     }
   }
 }

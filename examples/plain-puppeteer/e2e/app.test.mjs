@@ -3,19 +3,9 @@ import assert from "node:assert/strict";
 import puppeteer from "puppeteer";
 import { describeTest, withVibehardPage } from "vibehard/puppeteer";
 
-import { pricingSymbols } from "./uses.mjs";
-
 const baseUrl = process.env["VIBEHARD_BASE_URL"] ?? "http://127.0.0.1:4174";
 
-describeTest("home page shows the cart total", {
-  uses: [
-    ...pricingSymbols,
-    'src/lib/cart.ts#Cart.addItem',
-    'src/lib/cart.ts#Cart.totalCents',
-    'src/page.ts#renderHome',
-    'src/server.ts#routeRequest',
-  ],
-}, async () => {
+describeTest("home page shows the cart total", async () => {
   const browser = await puppeteer.launch({ args: ["--no-sandbox"] });
   try {
     const page = await withVibehardPage(browser);
@@ -30,14 +20,7 @@ describeTest("home page shows the cart total", {
   }
 });
 
-describeTest("price api applies a discount", {
-  uses: [
-    'src/api.ts#priceHandler',
-    'src/lib/pricing.ts#applyDiscount',
-    'src/lib/pricing.ts#formatPrice',
-    'src/server.ts#routeRequest',
-  ],
-}, async () => {
+describeTest("price api applies a discount", async () => {
   const response = await fetch(`${baseUrl}/api/price?cents=10000&discount=25`);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { cents: 7500, formatted: "$75.00" });

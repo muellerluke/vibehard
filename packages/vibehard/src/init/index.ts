@@ -177,7 +177,7 @@ function buildInstructions(detection: InitDetection, configRel: string): string[
     );
   } else {
     steps.push(
-      "1. In cypress/support/e2e, import { registerVibehardSupport } from 'vibehard/cypress' and call it. In cypress.config setupNodeEvents, call registerVibehardTasks(on) from 'vibehard/cypress/node'. Declare sets with uses([...]) as the first statement of each test (import { uses } from 'vibehard/cypress'). Plain `cypress run` is unaffected.",
+      "1. In cypress/support/e2e, import { registerVibehardSupport } from 'vibehard/cypress' and call it. In cypress.config setupNodeEvents, call registerVibehardTasks(on) from 'vibehard/cypress/node'. Specs need no vibehard code: `vibehard record` maps what each test touches. Plain `cypress run` is unaffected.",
       "2. Set e2e.baseUrl to process.env['VIBEHARD_BASE_URL'] ?? '<your usual dev url>' in cypress.config so vibehard can point tests at the server it starts.",
       "3. Instrument the app build with Istanbul (e.g. babel-plugin-istanbul or nyc) so window.__coverage__ exists in the browser — Cypress has no V8 range API, and a visited page without it fails verification closed. For Next.js, copy the examples/next-cypress setup (.babelrc env + `next build --webpack` + forced server source maps).",
     );
@@ -187,12 +187,12 @@ function buildInstructions(detection: InitDetection, configRel: string): string[
       "- In next.config, set productionBrowserSourceMaps: true. Vibehard verifies against the production build (next build, then the app command runs next start); without browser source maps it fails closed. Dev-server (next dev) output is not verifiable.",
       "- Routes must render per request to be observed: prerendered (static) routes execute at build time, not during tests. Add export const dynamic = 'force-dynamic' (App Router) or getServerSideProps (Pages Router) to routes under test.",
       "- If this project is an npm-workspaces member with hoisted dependencies, node_modules/next may live at the workspace root: point app.args at the real next bin (or a small resolver script), keeping `node` as the direct parent so coverage flushes on shutdown. An existing instrumentation.ts register() is left untouched; Vibehard does not need it.",
-      "- Build once (next build), then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
+      "- Build once (next build), then run `vibehard record` to map each test's touched symbols into vibehard.lock.json, and commit the lockfile.",
     );
   } else {
     steps.push(
       "- Replace the TODO app.command in the config with your production app start (built with source maps end to end; unmapped executed code fails verification closed). Use {port} where the assigned port belongs.",
-      "- Build your app, then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
+      "- Build your app, then run `vibehard record` to map each test's touched symbols into vibehard.lock.json, and commit the lockfile.",
     );
   }
   if (detection.express) {

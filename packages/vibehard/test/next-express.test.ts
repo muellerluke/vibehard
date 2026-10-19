@@ -178,7 +178,7 @@ describe("AT-21 (separate backend): production verify merges both processes", ()
     expect(result.exitCode, JSON.stringify(result.results, null, 1)).toBe(0);
     for (const r of result.results) {
       expect(r.status, r.testId).toBe("pass");
-      expect(r.observed, r.testId).toEqual(r.declared);
+      for (const id of r.observed) expect(r.touched?.[id], r.testId).toBeDefined();
     }
     const product = result.results.find((r) => r.testId === PRODUCT);
     // The frontend test's observed set spans both processes.

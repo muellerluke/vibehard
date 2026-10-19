@@ -1,17 +1,16 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ScriptInput } from "../observer/types.js";
-import { indexProject } from "../indexer/index.js";
+import { indexProject, INDEXER_VERSION } from "../indexer/index.js";
 import { mergeObservedSets, observeIstanbul, observeScripts, type IstanbulCoverage } from "../observer/index.js";
 import { filterSymbols, loadConfig, resolveGeneratedPaths, type ResolvedConfig } from "./config.js";
-import { CodemodError, rewriteDeclaration, type ExtractOptions } from "./declarations.js";
-import { diffDeclaredObserved } from "./diff.js";
 import { getFrameworkDriver, type FrameworkDriver } from "./driver.js";
 import {
   checkLockfile,
   emptyLockfile,
+  hashesForTouched,
   hashSymbolSources,
   readLockfile,
   writeLockfile,
@@ -20,6 +19,7 @@ import {
 } from "./lockfile.js";
 import { readArtifacts, type ListedTest } from "./listed.js";
 import { startServers } from "./servers.js";
+import { computeTouchedSet, diffTouchedSets, type TouchedSet } from "./touched.js";
 import {
   VibehardUsageError,
   type ProjectVerifyResult,
@@ -44,30 +44,6 @@ function sameFile(a: string, b: string): boolean {
   }
 }
 
-function makeReadImport(testFileAbs: string): ExtractOptions["readImport"] {
-  return (specifier) => {
-    const dir = path.dirname(testFileAbs);
-    const base = path.resolve(dir, specifier);
-    const candidates = [
-      base,
-      base.replace(/\.m?js$/, ".ts"),
-      base.replace(/\.m?js$/, ".tsx"),
-      `${base}.ts`,
-      `${base}.tsx`,
-      `${base}.js`,
-      path.join(base, "index.ts"),
-      path.join(base, "index.tsx"),
-      path.join(base, "index.js"),
-    ];
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) {
-        return { fileName: path.basename(candidate), text: readFileSync(candidate, "utf8") };
-      }
-    }
-    return null;
-  };
-}
-
 async function runProject(
   mode: "verify" | "record",
   options: VerifyProjectOptions,
@@ -83,7 +59,6 @@ async function runProject(
 
   const index = await indexProject(rootDir);
   const symbols = filterSymbols(index.symbols, resolved);
-  const knownIds = new Set(symbols.map((s) => s.id));
   const allHashes = hashSymbolSources(rootDir, symbols);
   const driver = getFrameworkDriver(resolved.config.framework);
   const frameworkVersion = driver.version(rootDir);
@@ -103,6 +78,12 @@ async function runProject(
     );
   }
 
+  // In verify mode the stored touched sets are the comparison target.
+  // A missing lockfile is drift per test, not a usage error; an
+  // unreadable (e.g. v1) lockfile fails closed from readLockfile.
+  const existingLock: VibehardLockfile | null =
+    mode === "verify" ? readLockfile(resolved.lockfilePath) : null;
+
   const generated = resolveGeneratedPaths(resolved);
   const runTemp = mkdtempSync(path.join(tmpdir(), "vibehard-run-"));
   const resolveMapFile = path.join(runTemp, "resolve-map.json");
@@ -115,9 +96,7 @@ async function runProject(
   const results: TestVerifyResult[] = [];
   const entries = new Map<string, LockfileTestEntry>();
   try {
-    for (let i = 0; i < selected.length; i += 1) {
-      const test = selected[i];
-      if (test === undefined) continue;
+    for (const test of selected) {
       const result = await runOneTest({
         mode,
         rootDir,
@@ -125,74 +104,64 @@ async function runProject(
         driver,
         test,
         symbols,
-        knownIds,
         generated,
         resolveMapFile,
         resolveRules,
+        existingEntry: existingLock?.tests[test.testId] ?? null,
       });
       results.push(result.result);
       if (result.entry !== null) entries.set(test.testId, result.entry);
-      // A record rewrite inserts lines above later tests in the same
-      // file, invalidating their listed `file:line` positions. Re-list
-      // so remaining tests run at fresh positions.
-      if (mode === "record" && result.result.changed === true && i + 1 < selected.length) {
-        const fresh = await driver.listTests(rootDir, resolved);
-        const byId = new Map(fresh.map((t) => [t.testId, t]));
-        for (let j = i + 1; j < selected.length; j += 1) {
-          const stale = selected[j];
-          const current = stale !== undefined ? byId.get(stale.testId) : undefined;
-          if (stale !== undefined && current !== undefined) selected[j] = current;
-        }
-      }
     }
   } finally {
     rmSync(runTemp, { recursive: true, force: true });
   }
 
   const diagnostics: string[] = [];
-  const skipVerifyCount = results.filter((r) => r.skipVerify !== null).length;
+  const alwaysRunCount = results.filter((r) => r.alwaysRun !== null).length;
   let drift: string[] = [];
   let written = false;
 
   const hasTestFailure = results.some((r) => r.status === "test-failed");
-  const hasMismatch = results.some((r) =>
-    ["mismatch", "unmappable", "no-declaration", "record-error", "error"].includes(r.status),
+  const hasFailure = results.some((r) =>
+    ["drift", "unstable", "unmappable", "error"].includes(r.status),
   );
 
   if (mode === "verify" && ci) {
-    drift = checkLockfile(readLockfile(resolved.lockfilePath), {
+    drift = checkLockfile(existingLock, {
       configHash: resolved.configHash,
       frameworkVersion,
       frameworkName: driver.name,
       expectations: results.map((r) => ({
         testId: r.testId,
-        declared: r.declared,
+        touched: r.touched,
         symbolHashes: allHashes,
       })),
       fullRun: filters.length === 0,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
     });
-    const budget = resolved.skipVerifyBudget ?? 0;
-    if (skipVerifyCount > budget) {
+    const budget = resolved.alwaysRunBudget ?? 0;
+    if (alwaysRunCount > budget) {
       diagnostics.push(
-        `skipVerify count ${skipVerifyCount} exceeds budget ${budget} under --ci`,
+        `alwaysRun count ${alwaysRunCount} exceeds budget ${budget} under --ci`,
       );
     }
-  } else if (mode === "verify" && !hasTestFailure && !hasMismatch) {
+  } else if (mode === "verify" && !hasTestFailure && !hasFailure) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
       fullRun: filters.length === 0,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
+      freshOnUnreadable: false,
     });
   } else if (mode === "record" && entries.size > 0) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
       fullRun: filters.length === 0,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
+      freshOnUnreadable: true,
     });
   }
 
   const exitCode: 0 | 1 | 2 = hasTestFailure
     ? 1
-    : hasMismatch || drift.length > 0 || diagnostics.length > 0
+    : hasFailure || drift.length > 0 || diagnostics.length > 0
       ? 2
       : 0;
   const passed = results.filter((r) => r.status === "pass" || r.status === "recorded").length;
@@ -208,8 +177,8 @@ async function runProject(
     summary: {
       total: results.length,
       passed,
-      failed: results.length - passed - skipVerifyCount,
-      skipVerifyCount,
+      failed: results.length - passed - alwaysRunCount,
+      alwaysRunCount,
     },
     diagnostics,
   };
@@ -220,13 +189,23 @@ function mergeAndWriteLockfile(
   driver: FrameworkDriver,
   frameworkVersion: string,
   entries: ReadonlyMap<string, LockfileTestEntry>,
-  scope: { fullRun: boolean; discoveredTestIds: ReadonlySet<string> },
+  scope: {
+    fullRun: boolean;
+    discoveredTestIds: ReadonlySet<string>;
+    /** Record mode: start fresh when the old lockfile is unreadable (v1). */
+    freshOnUnreadable: boolean;
+  },
 ): boolean {
-  const lock: VibehardLockfile =
-    readLockfile(resolved.lockfilePath) ??
-    emptyLockfile(resolved.configHash, frameworkVersion, driver.name);
+  let lock: VibehardLockfile | null = null;
+  try {
+    lock = readLockfile(resolved.lockfilePath);
+  } catch (error) {
+    if (!scope.freshOnUnreadable) throw error;
+  }
+  lock ??= emptyLockfile(resolved.configHash, frameworkVersion, driver.name);
   lock.framework = { name: driver.name, version: frameworkVersion };
   lock.configHash = resolved.configHash;
+  lock.graphVersion = INDEXER_VERSION;
   if (scope.fullRun) {
     for (const testId of Object.keys(lock.tests)) {
       if (!scope.discoveredTestIds.has(testId)) delete lock.tests[testId];
@@ -243,33 +222,28 @@ interface RunOneInput {
   driver: FrameworkDriver;
   test: ListedTest;
   symbols: ReturnType<typeof filterSymbols>;
-  knownIds: ReadonlySet<string>;
   generated: string[];
   resolveMapFile: string;
   resolveRules: { urlEndsWith: string; path: string }[];
+  existingEntry: LockfileTestEntry | null;
 }
 
-async function runOneTest(
-  input: RunOneInput,
-): Promise<{ result: TestVerifyResult; entry: LockfileTestEntry | null }> {
+interface Observation {
+  observed: string[];
+  touched: TouchedSet;
+  ok: boolean;
+  unmappable: TestVerifyResult["unmappable"];
+  diagnostics: string[];
+  alwaysRun: string | null;
+  testFailed: boolean;
+  skipped: boolean;
+  artifactMissing: string | null;
+  errors: string[];
+}
+
+async function observeOnce(input: RunOneInput): Promise<Observation> {
   const { test, resolved, rootDir } = input;
   const artifactDir = mkdtempSync(path.join(tmpdir(), "vibehard-art-"));
-  const base: TestVerifyResult = {
-    testId: test.testId,
-    file: test.relFile,
-    title: test.title,
-    titlePath: test.titlePath,
-    status: "error",
-    declared: null,
-    observed: [],
-    missing: [],
-    extra: [],
-    allowed: [],
-    unknown: [],
-    unmappable: [],
-    diagnostics: [],
-    skipVerify: null,
-  };
   try {
     const servers = await startServers(resolved);
     let run: Awaited<ReturnType<FrameworkDriver["runSingleTest"]>>;
@@ -301,18 +275,26 @@ async function runOneTest(
         ["failed", "timedOut", "interrupted"].includes(artifact.status));
 
     if (artifact === undefined) {
-      base.status = testFailed ? "test-failed" : "error";
-      base.diagnostics.push(
-        testFailed
-          ? `${input.driver.name} run failed (exit ${run.exitCode}) and no vibehard artifact was written`
-          : `no vibehard artifact was written; ${input.driver.missingArtifactHint}`,
-      );
       const tail = (run.stderr || run.stdout).trim().slice(-800);
-      if (tail !== "") base.diagnostics.push(tail);
-      return { result: base, entry: null };
+      return {
+        observed: [],
+        touched: {},
+        ok: false,
+        unmappable: [],
+        diagnostics: [
+          testFailed
+            ? `${input.driver.name} run failed (exit ${run.exitCode}) and no vibehard artifact was written`
+            : `no vibehard artifact was written; ${input.driver.missingArtifactHint}`,
+          ...(tail !== "" ? [tail] : []),
+        ],
+        alwaysRun: null,
+        testFailed,
+        skipped: false,
+        artifactMissing: "no artifact",
+        errors: [],
+      };
     }
 
-    base.skipVerify = artifact.declared.skipVerify;
     const clientScripts = artifact.clientScripts.map((script) => {
       if (script.sourcePath !== null && script.sourcePath !== undefined && script.sourcePath !== "") {
         return script;
@@ -339,142 +321,140 @@ async function runOneTest(
         observeIstanbul(null, { rootDir, symbols: input.symbols }),
       );
     }
-    base.observed = observed.merged;
-    base.unmappable = observed.unmappable;
-    base.diagnostics.push(
-      ...observed.diagnostics.filter((d) => !d.startsWith("excluded script:")),
-    );
 
-    if (testFailed) {
-      base.status = "test-failed";
-      base.declared = artifact.declared.uses;
-      if (artifact.errors.length > 0) base.diagnostics.push(...artifact.errors.slice(0, 2));
-      return { result: base, entry: null };
-    }
-    if (artifact.status === "skipped") {
-      base.status = "error";
-      base.declared = artifact.declared.uses;
-      base.diagnostics.push("test was skipped at runtime; its declaration cannot be verified");
-      return { result: base, entry: null };
-    }
-    if (artifact.declared.skipVerify !== null) {
-      base.status = "skipped-verify";
-      base.declared = artifact.declared.uses;
-      const hashes = hashesFor(input, artifact.declared.uses ?? []);
-      return {
-        result: base,
-        entry: {
-          file: test.relFile,
-          titlePath: test.titlePath,
-          declared: [...(artifact.declared.uses ?? [])].sort(),
-          symbolHashes: hashes,
-          allowTransitive: [...artifact.declared.allowTransitive].sort(),
-          allowedObserved: [],
-          skipVerify: artifact.declared.skipVerify,
-        },
-      };
-    }
-    if (!observed.ok) {
-      base.status = "unmappable";
-      base.declared = artifact.declared.uses;
-      return { result: base, entry: null };
-    }
-
-    const allow = artifact.declared.allowTransitive;
-
-    if (input.mode === "record") {
-      const rec = diffDeclaredObserved({
-        declared: [],
-        observed: observed.merged,
-        knownSymbolIds: input.knownIds,
-        ignore: resolved.ignore,
-        allowTransitive: allow,
-      });
-      const newUses = rec.extra;
-      base.allowed = rec.allowed;
-      base.diagnostics.push(...rec.diagnostics);
-      try {
-        const fileText = readFileSync(test.file, "utf8");
-        const rewritten = rewriteDeclaration(fileText, test.relFile, test.title, newUses, {
-          readImport: makeReadImport(test.file),
-          framework: input.driver.name,
-        });
-        if (rewritten.changed) writeFileSync(test.file, rewritten.text);
-        base.status = "recorded";
-        base.changed = rewritten.changed;
-        base.declared = rewritten.finalDeclared;
-        const unobservedFromSpread = rewritten.finalDeclared.filter(
-          (id) => !observed.merged.includes(id),
-        );
-        if (unobservedFromSpread.length > 0) {
-          base.diagnostics.push(
-            `shared group declares ${unobservedFromSpread.length} symbol(s) not observed (${unobservedFromSpread.join(", ")}); verify will report them missing`,
-          );
-        }
-        return {
-          result: base,
-          entry: {
-            file: test.relFile,
-            titlePath: test.titlePath,
-            declared: rewritten.finalDeclared,
-            symbolHashes: hashesFor(input, rewritten.finalDeclared),
-            allowTransitive: [...allow].sort(),
-            allowedObserved: rec.allowed,
-          },
-        };
-      } catch (error) {
-        base.status = "record-error";
-        base.declared = artifact.declared.uses;
-        base.diagnostics.push(
-          error instanceof CodemodError || error instanceof Error
-            ? error.message
-            : String(error),
-        );
-        return { result: base, entry: null };
-      }
-    }
-
-    // verify mode
-    if (artifact.declared.uses === null) {
-      base.status = "no-declaration";
-      base.diagnostics.push("test has no declaration; run `vibehard record` to generate one");
-      return { result: base, entry: null };
-    }
-    const diff = diffDeclaredObserved({
-      declared: artifact.declared.uses,
+    return {
       observed: observed.merged,
-      knownSymbolIds: input.knownIds,
-      ignore: resolved.ignore,
-      allowTransitive: allow,
-    });
-    base.declared = diff.declared;
-    base.observed = diff.observed;
-    base.missing = diff.missing;
-    base.extra = diff.extra;
-    base.allowed = diff.allowed;
-    base.unknown = diff.unknown;
-    base.diagnostics.push(...diff.diagnostics);
-    base.status = diff.missing.length === 0 && diff.extra.length === 0 ? "pass" : "mismatch";
-    const entry: LockfileTestEntry | null =
-      base.status === "pass"
-        ? {
-            file: test.relFile,
-            titlePath: test.titlePath,
-            declared: diff.declared ?? [],
-            symbolHashes: hashesFor(input, diff.declared ?? []),
-            allowTransitive: [...allow].sort(),
-            allowedObserved: diff.allowed,
-          }
-        : null;
-    return { result: base, entry };
+      touched: computeTouchedSet(observed.merged, input.symbols),
+      ok: observed.ok,
+      unmappable: observed.unmappable,
+      diagnostics: observed.diagnostics.filter((d) => !d.startsWith("excluded script:")),
+      alwaysRun: artifact.options.alwaysRun,
+      testFailed,
+      skipped: artifact.status === "skipped",
+      artifactMissing: null,
+      errors: artifact.errors,
+    };
   } finally {
     rmSync(artifactDir, { recursive: true, force: true });
   }
 }
 
-function hashesFor(input: RunOneInput, declared: readonly string[]): Record<string, string> {
-  const records = input.symbols.filter((s) => declared.includes(s.id));
-  return hashSymbolSources(input.rootDir, records);
+function entryFor(
+  input: RunOneInput,
+  touched: TouchedSet,
+  alwaysRun: string | null,
+): LockfileTestEntry {
+  const entry: LockfileTestEntry = {
+    file: input.test.relFile,
+    titlePath: input.test.titlePath,
+    touched,
+    symbolHashes: hashesForTouched(input.rootDir, input.symbols, touched),
+  };
+  if (alwaysRun !== null) entry.alwaysRun = alwaysRun;
+  return entry;
+}
+
+async function runOneTest(
+  input: RunOneInput,
+): Promise<{ result: TestVerifyResult; entry: LockfileTestEntry | null }> {
+  const { test } = input;
+  const base: TestVerifyResult = {
+    testId: test.testId,
+    file: test.relFile,
+    title: test.title,
+    titlePath: test.titlePath,
+    status: "error",
+    observed: [],
+    touched: null,
+    added: [],
+    removed: [],
+    unstableSymbols: [],
+    unmappable: [],
+    diagnostics: [],
+    alwaysRun: null,
+  };
+
+  const first = await observeOnce(input);
+  base.observed = first.observed;
+  base.touched = first.touched;
+  base.unmappable = first.unmappable;
+  base.diagnostics.push(...first.diagnostics);
+  base.alwaysRun = first.alwaysRun;
+
+  if (first.artifactMissing !== null) {
+    base.status = first.testFailed ? "test-failed" : "error";
+    base.touched = null;
+    return { result: base, entry: null };
+  }
+  if (first.testFailed) {
+    base.status = "test-failed";
+    base.touched = null;
+    if (first.errors.length > 0) base.diagnostics.push(...first.errors.slice(0, 2));
+    return { result: base, entry: null };
+  }
+  if (first.skipped) {
+    base.status = "error";
+    base.touched = null;
+    base.diagnostics.push("test was skipped at runtime; its touched set cannot be recorded");
+    return { result: base, entry: null };
+  }
+  if (first.alwaysRun !== null) {
+    base.status = "always-run";
+    base.touched = {};
+    return { result: base, entry: entryFor(input, {}, first.alwaysRun) };
+  }
+  if (!first.ok) {
+    base.status = "unmappable";
+    base.touched = null;
+    return { result: base, entry: null };
+  }
+
+  if (input.mode === "record") {
+    // Record observes twice: a touched set that is not reproducible
+    // is reported unstable and never written.
+    const second = await observeOnce(input);
+    if (second.testFailed || second.artifactMissing !== null) {
+      base.status = second.testFailed ? "test-failed" : "error";
+      base.touched = null;
+      base.diagnostics.push(...second.diagnostics);
+      return { result: base, entry: null };
+    }
+    if (!second.ok) {
+      base.status = "unmappable";
+      base.touched = null;
+      base.unmappable = second.unmappable;
+      return { result: base, entry: null };
+    }
+    const diff = diffTouchedSets(first.touched, second.touched);
+    const unstable = [...diff.added, ...diff.removed].sort();
+    if (unstable.length > 0) {
+      base.status = "unstable";
+      base.unstableSymbols = unstable;
+      base.diagnostics.push(
+        "touched set differed between two record runs; fix the nondeterminism or mark the test alwaysRun",
+      );
+      return { result: base, entry: null };
+    }
+    base.status = "recorded";
+    return { result: base, entry: entryFor(input, first.touched, null) };
+  }
+
+  // verify mode: drift is any difference from the stored touched set.
+  if (input.existingEntry === null) {
+    base.status = "drift";
+    base.added = Object.keys(first.touched).sort();
+    base.diagnostics.push("test is not in the lockfile; run `vibehard record`");
+    return { result: base, entry: null };
+  }
+  const diff = diffTouchedSets(input.existingEntry.touched, first.touched);
+  base.added = diff.added;
+  base.removed = diff.removed;
+  if (diff.added.length === 0 && diff.removed.length === 0) {
+    base.status = "pass";
+    return { result: base, entry: entryFor(input, first.touched, null) };
+  }
+  base.status = "drift";
+  return { result: base, entry: null };
 }
 
 /** Human-readable report for the CLI (no --json). */
@@ -484,21 +464,23 @@ export function formatVerifyReport(result: ProjectVerifyResult): string {
     const tag =
       r.status === "pass" || r.status === "recorded"
         ? "PASS"
-        : r.status === "skipped-verify"
-          ? "SKIP-VERIFY"
+        : r.status === "always-run"
+          ? "ALWAYS-RUN"
           : "FAIL";
     lines.push(`${tag} ${r.testId}${r.status === "pass" ? "" : ` (${r.status})`}`);
-    for (const id of r.missing) lines.push(`  missing (declared, not observed): ${id}`);
-    for (const id of r.extra) lines.push(`  extra (observed, not declared): ${id}`);
-    for (const id of r.allowed) lines.push(`  allowed (allowTransitive): ${id}`);
+    for (const id of r.added) lines.push(`  added (touched now, not recorded): ${id}`);
+    for (const id of r.removed) lines.push(`  removed (recorded, not touched now): ${id}`);
+    for (const id of r.unstableSymbols) lines.push(`  unstable: ${id}`);
     for (const u of r.unmappable) lines.push(`  unmappable (${u.origin}): ${u.url} — ${u.reason}`);
-    if (r.changed === true) lines.push(`  declaration rewritten in ${r.file}`);
+    if (r.touched !== null && (r.status === "pass" || r.status === "recorded")) {
+      lines.push(`  touched: ${Object.keys(r.touched).length} symbol(s)`);
+    }
     for (const d of r.diagnostics) lines.push(`  ${d}`);
   }
   for (const d of result.lockfile.drift) lines.push(`lockfile drift: ${d}`);
   for (const d of result.diagnostics) lines.push(d);
   lines.push(
-    `${result.mode}: ${result.summary.passed} passed, ${result.summary.failed} failed, ${result.summary.total} total; skipVerify: ${result.summary.skipVerifyCount} test(s); lockfile ${result.lockfile.written ? "updated" : "unchanged"} (${result.lockfile.path})`,
+    `${result.mode}: ${result.summary.passed} passed, ${result.summary.failed} failed, ${result.summary.total} total; alwaysRun: ${result.summary.alwaysRunCount} test(s); lockfile ${result.lockfile.written ? "updated" : "unchanged"} (${result.lockfile.path})`,
   );
   return `${lines.join("\n")}\n`;
 }

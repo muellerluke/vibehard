@@ -32,6 +32,8 @@ const POST = "src/app/api/coupons/route.ts#POST";
 const PAGE = "src/app/checkout/page.tsx#CheckoutPage";
 const ADD_ITEM = "src/lib/cart.ts#Cart.addItem";
 const FORMAT = "src/lib/format.ts#formatPrice";
+const ITEMS = "src/lib/cart.ts#Cart.items";
+const CENTS = "src/lib/format.ts#CENTS_PER_DOLLAR";
 
 const tempDirs: string[] = [];
 afterAll(() => {
@@ -98,7 +100,7 @@ beforeAll(async () => {
 }, T);
 
 describe("Stage 3 verifier on fixtures/tiny-app", () => {
-  it("AT-07: exact declarations pass verify (CLI, committed lockfile current)", async () => {
+  it("AT-07: recorded touched sets pass verify (CLI, committed lockfile current)", async () => {
     const r = await runCli(["verify", "--json"], { cwd: TINY_APP });
     expect(r.exitCode, r.stdout + r.stderr).toBe(0);
     const parsed = JSON.parse(r.stdout) as ProjectVerifyResult & { ok: boolean };
@@ -106,97 +108,84 @@ describe("Stage 3 verifier on fixtures/tiny-app", () => {
     expect(parsed.results.map((x) => x.status)).toEqual(["pass", "pass"]);
     expect(parsed.lockfile.written).toBe(false);
     const page = parsed.results.find((x) => x.title.includes("checkout"));
-    expect(page?.observed).toEqual([PAGE, ADD_ITEM, FORMAT].sort());
+    expect(page?.observed).toEqual([PAGE, ADD_ITEM, ITEMS, FORMAT].sort());
+    expect(page?.touched?.[CENTS]).toBe("referenced");
+    expect(page?.touched?.[FORMAT]).toBe("direct");
     const coupon = parsed.results.find((x) => x.title.includes("coupon"));
     expect(coupon?.observed).toEqual([POST]);
   }, T);
 
-  it("AT-08: removing a used symbol fails as extra", async () => {
-    const dir = await makeCopy({
-      mutate: (d) => editSpec(d, (t) => t.replace(`    '${ADD_ITEM}',\n`, "")),
-    });
+  it("verify on an unrecorded test fails as drift", async () => {
+    const dir = await makeCopy();
     const result = await verifyProject({ rootDir: dir, filter: ["checkout page"] });
     expect(result.exitCode).toBe(2);
     const r = only(result);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([ADD_ITEM]);
-    expect(r.missing).toEqual([]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toContain(ADD_ITEM);
+    expect(r.touched?.[CENTS]).toBe("referenced");
   }, T);
 
-  it("AT-09: adding an unused symbol fails as missing", async () => {
-    const dir = await makeCopy({
-      mutate: (d) =>
-        editSpec(d, (t) => t.replace(`    '${PAGE}',\n`, `    '${PAGE}',\n    '${POST}',\n`)),
-    });
-    const result = await verifyProject({ rootDir: dir, filter: ["checkout page"] });
-    expect(result.exitCode).toBe(2);
-    const r = only(result);
-    expect(r.status).toBe("mismatch");
-    expect(r.missing).toEqual([POST]);
-    expect(r.extra).toEqual([]);
-  }, T);
-
-  it("AT-10: app change exercising a new symbol fails as extra", async () => {
-    const dir = await makeCopy({
-      mutate: (d) => {
-        const route = path.join(d, "src/app/api/coupons/route.ts");
-        const text = readFileSync(route, "utf8");
-        writeFileSync(
-          route,
-          `import { formatPrice } from "../../../lib/format.js";\n${text.replace(
-            "{ ok: true, code: body.code }",
-            "{ ok: true, code: body.code, price: formatPrice(100) }",
-          )}`,
-        );
-      },
-    });
+  it("AT-10: app change exercising a new symbol fails verify as drift (added)", async () => {
+    const dir = await makeCopy();
+    const recorded = await recordProject({ rootDir: dir, filter: ["coupon"] });
+    expect(only(recorded).status).toBe("recorded");
+    const route = path.join(dir, "src/app/api/coupons/route.ts");
+    const text = readFileSync(route, "utf8");
+    writeFileSync(
+      route,
+      `import { formatPrice } from "../../../lib/format.js";
+${text.replace(
+        "{ ok: true, code: body.code }",
+        "{ ok: true, code: body.code, price: formatPrice(100) }",
+      )}`,
+    );
+    await buildHarness(dir);
     const result = await verifyProject({ rootDir: dir, filter: ["coupon"] });
     expect(result.exitCode).toBe(2);
     const r = only(result);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([FORMAT]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toContain(FORMAT);
+    expect(r.added).toContain(CENTS);
   }, T);
 
-  it("AT-11: record writes a declaration for an undeclared test; twice is a no-op", async () => {
-    const dir = await makeCopy({
-      mutate: (d) =>
-        editSpec(d, (t) =>
-          t.replace(/test\('checkout page shows the cart total', \{\n  uses: \[[\s\S]*?\],\n\}, async/, "test('checkout page shows the cart total', async"),
-        ),
-    });
-    const before = await verifyProject({ rootDir: dir, filter: ["checkout page"] });
-    expect(only(before).status).toBe("no-declaration");
-    expect(before.exitCode).toBe(2);
-
+  it("AT-11: record writes the lockfile without touching specs; twice is a no-op", async () => {
+    const dir = await makeCopy();
+    const specBefore = readFileSync(specPath(dir), "utf8");
     const recorded = await recordProject({ rootDir: dir, filter: ["checkout page"] });
-    expect(only(recorded).status).toBe("recorded");
-    expect(only(recorded).changed).toBe(true);
-    const specAfter = readFileSync(specPath(dir), "utf8");
-    for (const id of [PAGE, ADD_ITEM, FORMAT]) expect(specAfter).toContain(`'${id}'`);
+    const r = only(recorded);
+    expect(r.status).toBe("recorded");
+    expect(readFileSync(specPath(dir), "utf8")).toBe(specBefore);
+    expect(r.touched?.[PAGE]).toBe("direct");
+    expect(r.touched?.[ADD_ITEM]).toBe("direct");
+    expect(r.touched?.[CENTS]).toBe("referenced");
     const lockAfterFirst = readFileSync(path.join(dir, "vibehard.lock.json"), "utf8");
 
     const verified = await verifyProject({ rootDir: dir, filter: ["checkout page"] });
     expect(only(verified).status).toBe("pass");
 
     const again = await recordProject({ rootDir: dir, filter: ["checkout page"] });
-    expect(only(again).changed).toBe(false);
-    expect(readFileSync(specPath(dir), "utf8")).toBe(specAfter);
+    expect(only(again).status).toBe("recorded");
     expect(readFileSync(path.join(dir, "vibehard.lock.json"), "utf8")).toBe(lockAfterFirst);
   }, T);
 
-  it("AT-11 (spread): record preserves shared groups, rewrites literals only", async () => {
-    const dir = await makeCopy({
-      mutate: (d) => editSpec(d, (t) => t.replace(`    '${PAGE}',\n`, "")),
-    });
-    const recorded = await recordProject({ rootDir: dir, filter: ["checkout page"] });
+  it("a recorded symbol no longer touched fails verify as drift (removed)", async () => {
+    const dir = await makeCopy();
+    const recorded = await recordProject({ rootDir: dir, filter: ["coupon"] });
     expect(only(recorded).status).toBe("recorded");
-    const spec = readFileSync(specPath(dir), "utf8");
-    expect(spec).toContain("...priceSymbols");
-    expect(spec).toContain(`'${PAGE}'`);
-    // formatPrice stays only in the group definition, not duplicated as a literal.
-    expect(spec.split(`'${FORMAT}'`)).toHaveLength(1);
-    const verified = await verifyProject({ rootDir: dir, filter: ["checkout page"] });
-    expect(only(verified).status).toBe("pass");
+    const lockPath = path.join(dir, "vibehard.lock.json");
+    const lock = readLockfile(lockPath);
+    if (lock === null) throw new Error("lockfile missing after record");
+    const entry = Object.values(lock.tests)[0];
+    if (entry === undefined) throw new Error("entry missing");
+    entry.touched[FORMAT] = "direct";
+    entry.symbolHashes[FORMAT] = "0".repeat(64);
+    writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
+`);
+    const result = await verifyProject({ rootDir: dir, filter: ["coupon"] });
+    expect(result.exitCode).toBe(2);
+    const r = only(result);
+    expect(r.status).toBe("drift");
+    expect(r.removed).toContain(FORMAT);
   }, T);
 
   it("AT-12: tampered lockfile and edited symbol source are hash-detected under --ci", async () => {
@@ -207,7 +196,7 @@ describe("Stage 3 verifier on fixtures/tiny-app", () => {
     const lockPath = path.join(dir, "vibehard.lock.json");
     const lock = readLockfile(lockPath);
     if (lock === null) throw new Error("lockfile missing after verify");
-    const couponEntry = Object.values(lock.tests).find((e) => e.declared.includes(POST));
+    const couponEntry = Object.values(lock.tests).find((e) => POST in e.touched);
     if (couponEntry === undefined) throw new Error("coupon entry missing");
     couponEntry.symbolHashes[POST] = "0".repeat(64);
     writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
@@ -222,7 +211,7 @@ describe("Stage 3 verifier on fixtures/tiny-app", () => {
     expect(only(refreshed).status).toBe("pass");
     expect(refreshed.lockfile.written).toBe(true);
 
-    // Whitespace edit inside a declared symbol: --ci fails, plain re-verifies.
+    // Whitespace edit inside a touched symbol: --ci fails, plain re-verifies.
     const formatPath = path.join(dir, "src/lib/format.ts");
     writeFileSync(formatPath, readFileSync(formatPath, "utf8").replace("return `$", "return  `$"));
     const stale = await verifyProject({ rootDir: dir, filter: ["checkout page"], ci: true });
@@ -237,57 +226,23 @@ describe("Stage 3 verifier on fixtures/tiny-app", () => {
     expect(ciAgain.lockfile.drift).toEqual([]);
   }, T);
 
-  it("allowTransitive permits and records observed matches", async () => {
+  it("alwaysRun is counted, passes locally, and fails the --ci budget", async () => {
     const dir = await makeCopy({
       mutate: (d) =>
         editSpec(d, (t) =>
           t.replace(
-            `uses: ['${POST}']`,
-            `uses: [], allowTransitive: ['src/app/api/**']`,
-          ),
-        ),
-    });
-    const result = await verifyProject({ rootDir: dir, filter: ["coupon"] });
-    const r = only(result);
-    expect(result.exitCode).toBe(0);
-    expect(r.status).toBe("pass");
-    expect(r.allowed).toEqual([POST]);
-    const lock = readLockfile(path.join(dir, "vibehard.lock.json"));
-    const entry = Object.values(lock?.tests ?? {})[0];
-    expect(entry?.allowedObserved).toEqual([POST]);
-  }, T);
-
-  it("skipVerify is counted, passes locally, and fails the --ci budget", async () => {
-    const dir = await makeCopy({
-      mutate: (d) =>
-        editSpec(d, (t) =>
-          t.replace(
-            `uses: ['${POST}']`,
-            `uses: [], skipVerify: 'coupon endpoint is unstable'`,
+            "test('coupon api accepts a code', async",
+            "test('coupon api accepts a code', { alwaysRun: 'coupon endpoint is unstable' }, async",
           ),
         ),
     });
     const local = await verifyProject({ rootDir: dir, filter: ["coupon"] });
-    expect(only(local).status).toBe("skipped-verify");
+    expect(only(local).status).toBe("always-run");
     expect(local.exitCode).toBe(0);
-    expect(local.summary.skipVerifyCount).toBe(1);
+    expect(local.summary.alwaysRunCount).toBe(1);
     const ci = await verifyProject({ rootDir: dir, filter: ["coupon"], ci: true });
     expect(ci.exitCode).toBe(2);
-    expect(ci.diagnostics.some((d) => d.includes("skipVerify count"))).toBe(true);
-  }, T);
-
-  it("unknown declared symbols are reported as missing + unknown", async () => {
-    const dir = await makeCopy({
-      mutate: (d) =>
-        editSpec(d, (t) =>
-          t.replace(`uses: ['${POST}']`, `uses: ['${POST}', 'src/lib/nope.ts#Nope']`),
-        ),
-    });
-    const result = await verifyProject({ rootDir: dir, filter: ["coupon"] });
-    const r = only(result);
-    expect(r.status).toBe("mismatch");
-    expect(r.unknown).toEqual(["src/lib/nope.ts#Nope"]);
-    expect(r.missing).toEqual(["src/lib/nope.ts#Nope"]);
+    expect(ci.diagnostics.some((d) => d.includes("alwaysRun count"))).toBe(true);
   }, T);
 
   it("duplicate test titles in one file are a hard error", async () => {
@@ -296,7 +251,7 @@ describe("Stage 3 verifier on fixtures/tiny-app", () => {
         editSpec(
           d,
           (t) =>
-            `${t}\ntest('coupon api accepts a code', { uses: [] }, async () => {});\n`,
+            `${t}\ntest('coupon api accepts a code', async () => {});\n`,
         ),
     });
     await expect(verifyProject({ rootDir: dir })).rejects.toThrow(/duplicate test/);

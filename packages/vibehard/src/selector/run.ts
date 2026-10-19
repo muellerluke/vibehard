@@ -199,7 +199,7 @@ function symbolStatuses(
   knownIds: ReadonlySet<SymbolId>,
 ): ExplainSymbolStatus[] {
   if (entry === undefined) return [];
-  return [...entry.declared].sort().map((id) => {
+  return Object.keys(entry.touched).sort().map((id) => {
     if (!knownIds.has(id)) return { id, status: "missing" as const };
     const expected = entry.symbolHashes[id];
     if (expected === undefined) return { id, status: "unknown" as const };
@@ -214,19 +214,22 @@ function explainEntry(
   entry: LockfileTestEntry | undefined,
   headHashes: Readonly<Record<string, string>>,
   knownIds: ReadonlySet<SymbolId>,
-  via?: "declared" | "allowed",
+  via?: ExplainTestEntry["via"],
 ): ExplainTestEntry {
-  const declared = entry === undefined ? [] : [...entry.declared].sort();
-  const allowedObserved = entry === undefined ? [] : [...entry.allowedObserved].sort();
+  const touched: ExplainTestEntry["touched"] = {};
+  if (entry !== undefined) {
+    for (const id of Object.keys(entry.touched).sort()) {
+      const kind = entry.touched[id as SymbolId];
+      if (kind !== undefined) touched[id] = kind;
+    }
+  }
   const out: ExplainTestEntry = {
     testId,
     file,
     titlePath,
     inLockfile: entry !== undefined,
-    declared,
-    allowedObserved,
-    lastObserved: [...new Set([...declared, ...allowedObserved])].sort(),
-    skipVerify: entry?.skipVerify ?? null,
+    touched,
+    alwaysRun: entry?.alwaysRun ?? null,
     symbols: symbolStatuses(entry, headHashes, knownIds),
   };
   if (via !== undefined) out.via = via;
@@ -252,7 +255,7 @@ export async function explainProject(options: ExplainOptions): Promise<ExplainRe
     );
   }
   if (lock === null) {
-    diagnostics.push("no lockfile found; declared sets are unknown (run `vibehard record`)");
+    diagnostics.push("no lockfile found; touched sets are unknown (run `vibehard record`)");
   }
 
   const query = options.query;
@@ -260,10 +263,9 @@ export async function explainProject(options: ExplainOptions): Promise<ExplainRe
     const record = symbols.find((s) => s.id === query);
     const tests: ExplainTestEntry[] = [];
     for (const [testId, entry] of Object.entries(lock?.tests ?? {})) {
-      if (entry.declared.includes(query)) {
-        tests.push(explainEntry(testId, entry.file, entry.titlePath, entry, headHashes, knownIds, "declared"));
-      } else if (entry.allowedObserved.includes(query)) {
-        tests.push(explainEntry(testId, entry.file, entry.titlePath, entry, headHashes, knownIds, "allowed"));
+      const via = entry.touched[query as SymbolId];
+      if (via !== undefined) {
+        tests.push(explainEntry(testId, entry.file, entry.titlePath, entry, headHashes, knownIds, via));
       }
     }
     tests.sort((a, b) => (a.testId < b.testId ? -1 : a.testId > b.testId ? 1 : 0));
@@ -271,7 +273,7 @@ export async function explainProject(options: ExplainOptions): Promise<ExplainRe
       throw new VibehardUsageError(`vibehard explain: no symbol or test matches "${query}"`);
     }
     if (record === undefined) {
-      diagnostics.push(`${query} is declared but no longer in the index (renamed or deleted)`);
+      diagnostics.push(`${query} is recorded but no longer in the index (renamed or deleted)`);
     }
     return {
       query,
@@ -330,11 +332,11 @@ export async function explainProject(options: ExplainOptions): Promise<ExplainRe
 function reasonText(reason: SelectedTest["reasons"][number]): string {
   switch (reason.type) {
     case "changed-symbol":
-      return `changed symbol ${reason.symbol}`;
-    case "skip-verify":
-      return `skipVerify (${reason.reason})`;
-    case "unverified":
-      return "not in lockfile (unverified)";
+      return `changed symbol ${reason.symbol} (touched: ${reason.via})`;
+    case "always-run":
+      return `alwaysRun (${reason.reason})`;
+    case "unrecorded":
+      return "not in lockfile (unrecorded)";
     case "test-file-changed":
       return `test file changed (${reason.file})`;
   }
@@ -395,20 +397,19 @@ export function formatExplainReport(result: ExplainResult): string {
     } else {
       lines.push(`symbol ${result.query} (not in index)`);
     }
-    if (result.tests.length === 0) lines.push("  declared by: (no tests)");
+    if (result.tests.length === 0) lines.push("  touched by: (no tests)");
     for (const test of result.tests) {
-      lines.push(`  declared by: ${test.testId}${test.via === "allowed" ? " (via allowTransitive)" : ""}`);
+      lines.push(`  touched by: ${test.testId}${test.via !== undefined ? ` (${test.via})` : ""}`);
     }
   } else {
     for (const test of result.tests) {
       lines.push(`test ${test.testId}`);
-      if (!test.inLockfile) lines.push("  not in lockfile (unverified)");
-      if (test.skipVerify !== null) lines.push(`  skipVerify: ${test.skipVerify}`);
-      for (const s of test.symbols) lines.push(`  ${s.status}: ${s.id}`);
-      for (const id of test.allowedObserved) lines.push(`  allowed (allowTransitive): ${id}`);
-      lines.push(
-        `  declared ${test.declared.length}, last observed ${test.lastObserved.length}`,
-      );
+      if (!test.inLockfile) lines.push("  not in lockfile (unrecorded)");
+      if (test.alwaysRun !== null) lines.push(`  alwaysRun: ${test.alwaysRun}`);
+      for (const s of test.symbols) {
+        lines.push(`  ${s.status}: ${s.id} (${test.touched[s.id] ?? "direct"})`);
+      }
+      lines.push(`  touched ${Object.keys(test.touched).length} symbol(s)`);
     }
   }
   for (const d of result.diagnostics) lines.push(d);

@@ -97,15 +97,6 @@ function only(result: ProjectVerifyResult) {
   return r;
 }
 
-/** Remove the options-object argument of one describeTest call. */
-function stripDeclaration(text: string, title: string): string {
-  const at = text.indexOf(`describeTest("${title}", {`);
-  expect(at, `declared call for "${title}"`).toBeGreaterThanOrEqual(0);
-  const end = text.indexOf("}, async", at);
-  expect(end).toBeGreaterThan(at);
-  return text.slice(0, at) + `describeTest("${title}", async` + text.slice(end + "}, async".length);
-}
-
 beforeAll(async () => {
   const build = await spawnCapture("npm", ["run", "build", "-w", "vibehard"], {
     cwd: REPO_ROOT,
@@ -116,7 +107,7 @@ beforeAll(async () => {
 }, T);
 
 describe("AT-22: Puppeteer adapter on examples/plain-puppeteer", () => {
-  it("AT-07 equivalent: exact declarations pass verify (lockfile current)", async () => {
+  it("AT-07 equivalent: recorded touched sets pass verify (lockfile current)", async () => {
     const r = await runCli(["verify", "--json"], { cwd: EXAMPLE });
     expect(r.exitCode, r.stdout + r.stderr).toBe(0);
     const parsed = JSON.parse(r.stdout) as ProjectVerifyResult & { ok: boolean };
@@ -125,36 +116,47 @@ describe("AT-22: Puppeteer adapter on examples/plain-puppeteer", () => {
     expect(parsed.lockfile.written).toBe(false);
   }, T);
 
-  it("AT-08 equivalent: removing a used symbol fails as extra", async () => {
-    const dir = await makeCopy((d) =>
-      edit(d, "e2e/app.test.mjs", (text) =>
-        text.replace(`    '${ADD_ITEM}',\n`, ""),
-      ),
-    );
+  it("a touched symbol missing from the lockfile fails verify as drift (added)", async () => {
+    const dir = await makeCopy((d) => {
+      const lockPath = path.join(d, "vibehard.lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
+        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
+      };
+      const entry = lock.tests[HOME];
+      if (entry === undefined) throw new Error("home entry missing");
+      delete entry.touched[ADD_ITEM];
+      delete entry.symbolHashes[ADD_ITEM];
+      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
+`);
+    });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([ADD_ITEM]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toEqual([ADD_ITEM]);
   }, T);
 
-  it("AT-09 equivalent: adding an unused symbol fails as missing", async () => {
-    const dir = await makeCopy((d) =>
-      edit(d, "e2e/app.test.mjs", (text) =>
-        text.replace(
-          "    'src/page.ts#renderHome',",
-          `    '${DISCOUNT}',\n    'src/page.ts#renderHome',`,
-        ),
-      ),
-    );
+  it("a lockfile symbol no longer touched fails verify as drift (removed)", async () => {
+    const dir = await makeCopy((d) => {
+      const lockPath = path.join(d, "vibehard.lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
+        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
+      };
+      const entry = lock.tests[HOME];
+      if (entry === undefined) throw new Error("home entry missing");
+      entry.touched[DISCOUNT] = "direct";
+      entry.symbolHashes[DISCOUNT] = "0".repeat(64);
+      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
+`);
+    });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.missing).toEqual([DISCOUNT]);
+    expect(r.status).toBe("drift");
+    expect(r.removed).toEqual([DISCOUNT]);
   }, T);
 
-  it("AT-10 equivalent: exercising a new app symbol fails as extra", async () => {
+  it("AT-10 equivalent: exercising a new app symbol fails verify as drift", async () => {
     const dir = await makeCopy((d) => {
       edit(d, "src/client.ts", (text) =>
         text
@@ -171,24 +173,23 @@ describe("AT-22: Puppeteer adapter on examples/plain-puppeteer", () => {
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([DISCOUNT]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toContain(DISCOUNT);
   }, T);
 
-  it("record writes a declaration for an undeclared test; twice is a no-op", async () => {
+  it("record writes the lockfile without touching specs; twice is a no-op", async () => {
     const dir = await makeCopy((d) => {
-      edit(d, "e2e/app.test.mjs", (text) =>
-        stripDeclaration(text, "price api applies a discount"),
-      );
       rmSync(path.join(d, "vibehard.lock.json"), { force: true });
     });
+    const specBefore = readFileSync(path.join(dir, "e2e/app.test.mjs"), "utf8");
     const first = await recordProject({ rootDir: dir, filter: ["price api"] });
     expect(only(first).status).toBe("recorded");
-    const afterFirst = readFileSync(path.join(dir, "e2e/app.test.mjs"), "utf8");
-    expect(afterFirst).toContain("'src/api.ts#priceHandler'");
+    expect(only(first).touched?.["src/api.ts#priceHandler"]).toBe("direct");
+    expect(readFileSync(path.join(dir, "e2e/app.test.mjs"), "utf8")).toBe(specBefore);
+    const lockAfterFirst = readFileSync(path.join(dir, "vibehard.lock.json"), "utf8");
     const second = await recordProject({ rootDir: dir, filter: ["price api"] });
-    expect(only(second).changed).not.toBe(true);
-    expect(readFileSync(path.join(dir, "e2e/app.test.mjs"), "utf8")).toBe(afterFirst);
+    expect(only(second).status).toBe("recorded");
+    expect(readFileSync(path.join(dir, "vibehard.lock.json"), "utf8")).toBe(lockAfterFirst);
     const verify = await verifyProject({ rootDir: dir, filter: ["price api"] });
     expect(only(verify).status).toBe("pass");
   }, T);

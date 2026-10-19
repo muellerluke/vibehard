@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   classifyChangedFile,
+  INDEXER_VERSION,
   computeChangedSymbolsForFile,
   explainProject,
   lockfileTrustReasons,
@@ -37,6 +38,7 @@ const POST = "src/app/api/coupons/route.ts#POST";
 const PAGE = "src/app/checkout/page.tsx#CheckoutPage";
 const ADD_ITEM = "src/lib/cart.ts#Cart.addItem";
 const FORMAT = "src/lib/format.ts#formatPrice";
+const CENTS = "src/lib/format.ts#CENTS_PER_DOLLAR";
 const CHECKOUT_ID = "e2e/checkout.spec.ts::checkout page shows the cart total";
 const COUPON_ID = "e2e/checkout.spec.ts::coupon api accepts a code";
 
@@ -250,15 +252,14 @@ describe("selector units", () => {
     const entry = {
       file: "e2e/a.spec.ts",
       titlePath: ["t"],
-      declared: ["src/a.ts#f", "src/a.ts#g"],
+      touched: { "src/a.ts#f": "direct" as const, "src/a.ts#g": "referenced" as const },
       symbolHashes: { "src/a.ts#f": "hf", "src/a.ts#g": "hg" },
-      allowTransitive: [],
-      allowedObserved: [],
     };
     const lock = {
-      version: 1 as const,
+      version: 2 as const,
       framework: { name: "playwright", version: "1.59.0" },
       configHash: "cfg",
+      graphVersion: INDEXER_VERSION,
       tests: { "e2e/a.spec.ts::t": entry },
     };
     const resolved = { configHash: "cfg" } as Parameters<typeof lockfileTrustReasons>[0]["resolved"];
@@ -281,8 +282,8 @@ describe("selector units", () => {
 // --- integration: selection against a real git repo -----------------------
 
 describe("Stage 4 selection on fixtures/tiny-app", () => {
-  it("AT-13: changing one symbol's body selects exactly its declaring tests", async () => {
-    const cases: { name: string; mutate: (dir: string) => void; symbol: string; expected: string[] }[] = [
+  it("AT-13: changing one symbol selects exactly its touching tests", async () => {
+    const cases: { name: string; mutate: (dir: string) => void; symbol: string; expected: string[]; via?: string }[] = [
       {
         name: "Cart.addItem",
         symbol: ADD_ITEM,
@@ -295,7 +296,23 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
         symbol: FORMAT,
         expected: [CHECKOUT_ID],
         mutate: (dir) => edit(dir, "src/lib/format.ts", (t) =>
-          t.replace("(cents / 100)", "(cents / 100 + 0)")),
+          t.replace("(cents / CENTS_PER_DOLLAR)", "(cents / CENTS_PER_DOLLAR + 0)")),
+      },
+      {
+        name: "CENTS_PER_DOLLAR (top-level constant)",
+        symbol: CENTS,
+        expected: [CHECKOUT_ID],
+        via: "referenced",
+        mutate: (dir) => edit(dir, "src/lib/format.ts", (t) =>
+          t.replace("CENTS_PER_DOLLAR = 100", "CENTS_PER_DOLLAR = 50")),
+      },
+      {
+        name: "Cart module (import line)",
+        symbol: "src/lib/cart.ts#<module>",
+        expected: [CHECKOUT_ID],
+        via: "module",
+        mutate: (dir) => edit(dir, "src/lib/cart.ts", (t) =>
+          `// module note\n${t}`),
       },
       {
         name: "CheckoutPage",
@@ -320,7 +337,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
       expect(result.selection?.changedSymbols, c.name).toEqual([c.symbol]);
       expect(selectedIds(result.selection), c.name).toEqual(c.expected);
       const reasons = result.selection?.selected[0]?.reasons ?? [];
-      expect(reasons, c.name).toContainEqual({ type: "changed-symbol", symbol: c.symbol });
+      expect(reasons, c.name).toContainEqual({ type: "changed-symbol", symbol: c.symbol, via: c.via ?? "direct" });
       rmSync(dir, { recursive: true, force: true });
     }
   }, T);
@@ -364,7 +381,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     expect(ran.output).toBeNull();
   }, T);
 
-  it("AT-18: deleting a declared symbol's file selects its tests", async () => {
+  it("AT-18: deleting a touched symbol's file selects its tests", async () => {
     const dir = await makeGitCopy();
     rmSync(path.join(dir, "src/lib/format.ts"));
     const { exitCode, result } = await dryRun(dir);
@@ -385,10 +402,10 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     });
 
     const dir2 = await makeGitCopy();
-    edit(dir2, "e2e/uses.ts", (t) => `${t}\n// touched\n`);
+    writeFileSync(path.join(dir2, "e2e/support.ts"), "export const helper = 1;\n");
     const support = await selectTests({ rootDir: dir2 });
     expect(support.unsafeReason).toContain("unsafe: unmapped change");
-    expect(support.unsafeReason).toContain("e2e/uses.ts");
+    expect(support.unsafeReason).toContain("e2e/support.ts");
   }, T);
 
   it("a tampered lockfile hash makes selection unsafe (stale)", async () => {
@@ -396,7 +413,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     const lockPath = path.join(dir, "vibehard.lock.json");
     const lock = readLockfile(lockPath);
     if (lock === null) throw new Error("fixture lockfile missing");
-    const entry = Object.values(lock.tests).find((e) => e.declared.includes(POST));
+    const entry = Object.values(lock.tests).find((e) => POST in e.touched);
     if (entry === undefined) throw new Error("coupon entry missing");
     entry.symbolHashes[POST] = "0".repeat(64);
     writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
@@ -407,7 +424,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     expect(result.selection?.unsafeReasons.join(" ")).toContain("stale lockfile");
   }, T);
 
-  it("skipVerify tests always run, even with no changes", async () => {
+  it("alwaysRun tests always run, even with no changes", async () => {
     const dir = await makeGitCopy({
       mutateBeforeCommit: (d) => {
         const lockPath = path.join(d, "vibehard.lock.json");
@@ -415,7 +432,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
         if (lock === null) throw new Error("fixture lockfile missing");
         const entry = lock.tests[COUPON_ID];
         if (entry === undefined) throw new Error("coupon entry missing");
-        entry.skipVerify = "flaky upstream";
+        entry.alwaysRun = "flaky upstream";
         writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
       },
     });
@@ -423,7 +440,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     expect(exitCode).toBe(0);
     expect(selectedIds(result.selection)).toEqual([COUPON_ID]);
     expect(result.selection?.selected[0]?.reasons).toContainEqual({
-      type: "skip-verify",
+      type: "always-run",
       reason: "flaky upstream",
     });
   }, T);
@@ -489,13 +506,14 @@ describe("Stage 4 runner and explain", () => {
     expect(symbolResult.kind).toBe("symbol");
     expect(symbolResult.symbol?.kind).toBe("route-export");
     expect(symbolResult.tests.map((t) => t.testId)).toEqual([COUPON_ID]);
-    expect(symbolResult.tests[0]?.via).toBe("declared");
+    expect(symbolResult.tests[0]?.via).toBe("direct");
 
     const byTest = await explainProject({ rootDir: TINY_APP, query: "checkout page" });
     expect(byTest.kind).toBe("test");
     expect(byTest.tests.map((t) => t.testId)).toEqual([CHECKOUT_ID]);
-    expect(byTest.tests[0]?.declared).toEqual([PAGE, ADD_ITEM, FORMAT].sort());
-    expect(byTest.tests[0]?.lastObserved).toEqual([PAGE, ADD_ITEM, FORMAT].sort());
+    expect(byTest.tests[0]?.touched[FORMAT]).toBe("direct");
+    expect(byTest.tests[0]?.touched[CENTS]).toBe("referenced");
+    expect(byTest.tests[0]?.touched["src/lib/format.ts#<module>"]).toBe("module");
     expect(byTest.tests[0]?.symbols.every((s) => s.status === "fresh")).toBe(true);
 
     const missing = await runCli(["explain", "src/nope.ts#Nope"], { cwd: TINY_APP });
@@ -505,7 +523,7 @@ describe("Stage 4 runner and explain", () => {
 
   it("explain reports an edited symbol as stale", async () => {
     const dir = await makeGitCopy();
-    edit(dir, "src/lib/format.ts", (t) => t.replace("(cents / 100)", "(cents / 100 + 0)"));
+    edit(dir, "src/lib/format.ts", (t) => t.replace("(cents / CENTS_PER_DOLLAR)", "(cents / CENTS_PER_DOLLAR + 0)"));
     const result = await explainProject({ rootDir: dir, query: "checkout page" });
     const statuses = new Map(result.tests[0]?.symbols.map((s) => [s.id, s.status]));
     expect(statuses.get(FORMAT)).toBe("stale");
@@ -527,6 +545,11 @@ describe("AT-17 recall audit on fixtures/tiny-app", () => {
       symbol: ADD_ITEM,
       mutate: (dir) => edit(dir, "src/lib/cart.ts", (t) =>
         t.replace("existing.quantity += item.quantity;", "existing.quantity += 1;")),
+    },
+    {
+      symbol: CENTS,
+      mutate: (dir) => edit(dir, "src/lib/format.ts", (t) =>
+        t.replace("CENTS_PER_DOLLAR = 100", "CENTS_PER_DOLLAR = 50")),
     },
     {
       symbol: POST,
@@ -556,7 +579,7 @@ describe("AT-17 recall audit on fixtures/tiny-app", () => {
       await buildHarness(dir);
       const full = await verifyProject({ rootDir: dir });
       const affected = full.results
-        .filter((r) => r.status !== "pass" && r.status !== "skipped-verify")
+        .filter((r) => r.status !== "pass" && r.status !== "always-run")
         .map((r) => r.testId);
       expect(affected.length, "the mutation must actually affect a test").toBeGreaterThan(0);
       const selected = new Set(selectedIds(selection));

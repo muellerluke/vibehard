@@ -1,29 +1,26 @@
 import type { SymbolId } from "../index.js";
 import type { UnmappableScript } from "../observer/index.js";
+import type { TouchedSet } from "./touched.js";
 
-/** Declaration options written next to a test (manifest: Declaration API). */
+/** Options written next to a test. The only escape hatch is `alwaysRun`. */
 export interface VibehardTestOptions {
-  uses: SymbolId[];
-  allowTransitive?: string[];
-  skipVerify?: string;
+  /** Reason this test always runs under `vibehard test` and is not recorded. */
+  alwaysRun?: string;
 }
 
-/** Declaration as transported at runtime; `uses: null` means undeclared. */
-export interface RuntimeDeclaration {
-  uses: SymbolId[] | null;
-  allowTransitive: string[];
-  skipVerify: string | null;
+/** Options as transported at runtime. */
+export interface RuntimeOptions {
+  alwaysRun: string | null;
 }
 
 export type TestVerifyStatus =
   | "pass"
-  | "mismatch"
+  | "drift"
   | "test-failed"
-  | "skipped-verify"
+  | "always-run"
   | "unmappable"
-  | "no-declaration"
   | "recorded"
-  | "record-error"
+  | "unstable"
   | "error";
 
 export interface TestVerifyResult {
@@ -33,29 +30,26 @@ export interface TestVerifyResult {
   title: string;
   titlePath: string[];
   status: TestVerifyStatus;
-  /** Normalized declared set, or null when the test declares nothing. */
-  declared: SymbolId[] | null;
+  /** Directly observed symbol IDs (coverage seeds). */
   observed: SymbolId[];
-  /** Declared but not observed (includes unknown symbol IDs). */
-  missing: SymbolId[];
-  /** Observed but not declared (excluding allowTransitive matches). */
-  extra: SymbolId[];
-  /** Observed, undeclared, but permitted by `allowTransitive`. */
-  allowed: SymbolId[];
-  /** Declared IDs with no matching indexed symbol. */
-  unknown: SymbolId[];
+  /** Full touched set computed from the observation, or null. */
+  touched: TouchedSet | null;
+  /** Verify mode: touched now but not in the lockfile. */
+  added: SymbolId[];
+  /** Verify mode: in the lockfile but not touched now. */
+  removed: SymbolId[];
+  /** Record mode: symbols whose presence differed between the two runs. */
+  unstableSymbols: SymbolId[];
   unmappable: UnmappableScript[];
   diagnostics: string[];
-  skipVerify: string | null;
-  /** Record mode: true when the test file was rewritten. */
-  changed?: boolean;
+  alwaysRun: string | null;
 }
 
 export interface ProjectVerifyResult {
   ok: boolean;
   mode: "verify" | "record";
   ci: boolean;
-  /** 0 pass, 1 test failure, 2 verification mismatch / drift. */
+  /** 0 pass, 1 test failure, 2 drift / instability / lockfile drift. */
   exitCode: 0 | 1 | 2;
   rootDir: string;
   results: TestVerifyResult[];
@@ -64,7 +58,7 @@ export interface ProjectVerifyResult {
     total: number;
     passed: number;
     failed: number;
-    skipVerifyCount: number;
+    alwaysRunCount: number;
   };
   diagnostics: string[];
 }

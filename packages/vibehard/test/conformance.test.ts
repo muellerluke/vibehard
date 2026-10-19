@@ -41,9 +41,9 @@ async function git(cwd: string, args: string[]): Promise<void> {
   expect(r.exitCode, `git ${args.join(" ")}: ${r.stderr}`).toBe(0);
 }
 
-function setsByTitle(result: ProjectVerifyResult): Map<string, { declared: unknown; observed: unknown }> {
+function setsByTitle(result: ProjectVerifyResult): Map<string, { touched: unknown; observed: unknown }> {
   return new Map(
-    result.results.map((r) => [r.title, { declared: r.declared, observed: r.observed }]),
+    result.results.map((r) => [r.title, { touched: r.touched, observed: r.observed }]),
   );
 }
 
@@ -57,7 +57,7 @@ beforeAll(async () => {
 }, T);
 
 describe("AT-24: adapter conformance on fixtures/tiny-app", () => {
-  it("the same declared sets verify identically under Playwright and Puppeteer", async () => {
+  it("the same touched sets verify identically under Playwright and Puppeteer", async () => {
     const playwright = await verifyProject({ rootDir: TINY_APP });
     const puppeteer = await verifyProject({ rootDir: TINY_APP, configPath: PUPPETEER_CONFIG });
     expect(playwright.exitCode, JSON.stringify(playwright.results, null, 2)).toBe(0);
@@ -66,7 +66,7 @@ describe("AT-24: adapter conformance on fixtures/tiny-app", () => {
     const pp = setsByTitle(puppeteer);
     expect([...pp.keys()].sort()).toEqual([...pw.keys()].sort());
     for (const [title, sets] of pw) {
-      expect(pp.get(title)?.declared, title).toEqual(sets.declared);
+      expect(pp.get(title)?.touched, title).toEqual(sets.touched);
       expect(pp.get(title)?.observed, title).toEqual(sets.observed);
     }
   }, T);
@@ -96,10 +96,10 @@ describe("AT-24: adapter conformance on fixtures/tiny-app", () => {
     const formatPath = path.join(dir, "src/lib/format.ts");
     const before = readFileSync(formatPath, "utf8");
     // Body edit inside formatPrice (same output): its hash changes, so
-    // selection must include its declaring tests under both adapters.
+    // selection must include its touching tests under both adapters.
     const mutated = before.replace(
-      "return `$${(cents / 100).toFixed(2)}`;",
-      "const dollars = (cents / 100).toFixed(2);\n  return `$${dollars}`;",
+      "return `$${(cents / CENTS_PER_DOLLAR).toFixed(2)}`;",
+      "const dollars = (cents / CENTS_PER_DOLLAR).toFixed(2);\n  return `$${dollars}`;",
     );
     expect(mutated).not.toBe(before);
     writeFileSync(formatPath, mutated);

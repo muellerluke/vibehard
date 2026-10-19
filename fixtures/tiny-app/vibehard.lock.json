@@ -1,42 +1,51 @@
 {
-  "version": 1,
+  "version": 2,
   "framework": {
     "name": "playwright",
     "version": "1.59.0"
   },
   "configHash": "582775a202a56fa286d194cca75e3452ec801acd79da41739df1a1f87a323e8e",
+  "graphVersion": 2,
   "tests": {
     "e2e/checkout.spec.ts::checkout page shows the cart total": {
       "file": "e2e/checkout.spec.ts",
       "titlePath": [
         "checkout page shows the cart total"
       ],
-      "declared": [
-        "src/app/checkout/page.tsx#CheckoutPage",
-        "src/lib/cart.ts#Cart.addItem",
-        "src/lib/format.ts#formatPrice"
-      ],
-      "symbolHashes": {
-        "src/app/checkout/page.tsx#CheckoutPage": "233acb22755a64660df8fb5ce10f75d1c8c8ee7a8b3e043a194aff1acca8253c",
-        "src/lib/cart.ts#Cart.addItem": "c81885bc5940f0d98d1e6028de849f94b1e4016272b7c07c76d968871a9c90b3",
-        "src/lib/format.ts#formatPrice": "57949532e9722f541b0450a3991f158d6b28bc436c4dbc4b418b79994721ba75"
+      "touched": {
+        "src/app/checkout/page.tsx#<module>": "module",
+        "src/app/checkout/page.tsx#CheckoutPage": "direct",
+        "src/lib/cart.ts#<module>": "module",
+        "src/lib/cart.ts#Cart.addItem": "direct",
+        "src/lib/cart.ts#Cart.items": "direct",
+        "src/lib/format.ts#<module>": "module",
+        "src/lib/format.ts#CENTS_PER_DOLLAR": "referenced",
+        "src/lib/format.ts#formatPrice": "direct"
       },
-      "allowTransitive": [],
-      "allowedObserved": []
+      "symbolHashes": {
+        "src/app/checkout/page.tsx#<module>": "62100c430c684131b0dce1f1da7a13442fd33ae4850eb9de40a27f924b3e54b8",
+        "src/app/checkout/page.tsx#CheckoutPage": "233acb22755a64660df8fb5ce10f75d1c8c8ee7a8b3e043a194aff1acca8253c",
+        "src/lib/cart.ts#<module>": "7f41389714a5a8eaa3d43132965ea02c76c56ee00f9b1b18942108a5ca68ba66",
+        "src/lib/cart.ts#Cart.addItem": "c81885bc5940f0d98d1e6028de849f94b1e4016272b7c07c76d968871a9c90b3",
+        "src/lib/cart.ts#Cart.items": "1bc04f6f9d9f7bbba612bcedd8b2cb4e054ea2544f54f667246a8d77d5f63ea7",
+        "src/lib/format.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "src/lib/format.ts#CENTS_PER_DOLLAR": "8da551620fe13c125d303457f88f9a78b7c495458dadcde43f36270691d6d35b",
+        "src/lib/format.ts#formatPrice": "65a822ed7aa6ab364f524c80cb0ecdb9d6d1e4de054618dc4350948137f011c1"
+      }
     },
     "e2e/checkout.spec.ts::coupon api accepts a code": {
       "file": "e2e/checkout.spec.ts",
       "titlePath": [
         "coupon api accepts a code"
       ],
-      "declared": [
-        "src/app/api/coupons/route.ts#POST"
-      ],
-      "symbolHashes": {
-        "src/app/api/coupons/route.ts#POST": "d0a8bdb7452b9cad199566fcc233444221c544789f5f60a4aeaad1812f60f1b2"
+      "touched": {
+        "src/app/api/coupons/route.ts#<module>": "module",
+        "src/app/api/coupons/route.ts#POST": "direct"
       },
-      "allowTransitive": [],
-      "allowedObserved": []
+      "symbolHashes": {
+        "src/app/api/coupons/route.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "src/app/api/coupons/route.ts#POST": "d0a8bdb7452b9cad199566fcc233444221c544789f5f60a4aeaad1812f60f1b2"
+      }
     }
   }
 }

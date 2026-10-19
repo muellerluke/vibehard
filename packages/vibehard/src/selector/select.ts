@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import type { SymbolId, SymbolRecord } from "../index.js";
-import { indexProject } from "../indexer/index.js";
+import { indexProject, INDEXER_VERSION } from "../indexer/index.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
 import { getFrameworkDriver } from "../verifier/driver.js";
 import {
@@ -86,7 +86,7 @@ interface TrustInput {
 }
 
 /**
- * The lockfile is trusted only when every declared hash of every still-
+ * The lockfile is trusted only when every touched hash of every still-
  * discovered test matches the base source, or every hash matches the
  * current source (a change whose author already re-ran record). A mixed
  * state proves the mapping was never exact for either endpoint.
@@ -101,6 +101,11 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
   const reasons: string[] = [];
   if (input.lock.configHash !== input.resolved.configHash) {
     reasons.push("unsafe: stale lockfile: config hash differs from current config");
+  }
+  if (input.lock.graphVersion !== INDEXER_VERSION) {
+    reasons.push(
+      `unsafe: stale lockfile: graph version ${input.lock.graphVersion} differs from current ${INDEXER_VERSION} (re-run \`vibehard record\`)`,
+    );
   }
   const expectedName = input.frameworkName ?? input.resolved.config?.framework ?? "playwright";
   const expectedVersion =
@@ -117,7 +122,7 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
   let allHead = true;
   for (const [testId, entry] of Object.entries(input.lock.tests)) {
     if (!input.discoveredIds.has(testId)) continue;
-    for (const id of entry.declared) {
+    for (const id of Object.keys(entry.touched)) {
       const expected = entry.symbolHashes[id];
       if (expected === undefined || input.baseHashes[id] !== expected) allBase = false;
       if (expected === undefined || input.headHashes[id] !== expected) allHead = false;
@@ -190,6 +195,10 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
   const lockfileRel = toPosix(path.relative(rootDir, resolved.lockfilePath));
   const baseByFile = groupByFile(baseSymbols);
   const headByFile = groupByFile(headSymbols);
+  const assetFiles = new Set<string>();
+  for (const s of [...baseSymbols, ...headSymbols]) {
+    if (s.kind === "asset") assetFiles.add(s.file);
+  }
 
   try {
     for (const change of changedFiles) {
@@ -199,6 +208,7 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
         testDirPosix: resolved.testDirPosix,
         specFiles,
         lockfileRel,
+        assetFiles,
       });
       switch (kind) {
         case "ignored":
@@ -218,7 +228,8 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
         case "unmapped":
           unsafeReasons.push(`unsafe: unmapped change: ${change.file}`);
           break;
-        case "app": {
+        case "app":
+        case "asset": {
           const patch = patchByFile.get(change.file);
           const result = computeChangedSymbolsForFile({
             status: change.status,
@@ -274,15 +285,17 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
     if (changedSpecFiles.has(test.relFile)) {
       reasons.push({ type: "test-file-changed", file: test.relFile });
     }
-    if (entry?.skipVerify !== undefined) {
-      reasons.push({ type: "skip-verify", reason: entry.skipVerify });
+    if (entry?.alwaysRun !== undefined) {
+      reasons.push({ type: "always-run", reason: entry.alwaysRun });
     }
     if (entry === undefined) {
-      reasons.push({ type: "unverified" });
+      reasons.push({ type: "unrecorded" });
     } else {
-      const effective = [...new Set([...entry.declared, ...entry.allowedObserved])].sort();
-      for (const id of effective) {
-        if (changedSymbols.has(id)) reasons.push({ type: "changed-symbol", symbol: id });
+      for (const id of Object.keys(entry.touched).sort()) {
+        if (changedSymbols.has(id as SymbolId)) {
+          const via = entry.touched[id as SymbolId] ?? "direct";
+          reasons.push({ type: "changed-symbol", symbol: id, via });
+        }
       }
     }
     if (reasons.length > 0) selected.push({ ...toRef(test), reasons });

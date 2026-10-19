@@ -7,12 +7,13 @@ export {
   stableStringify,
 } from "./config.js";
 export type { ResolvedConfig, VibehardAppConfig, VibehardConfig, VibehardServerConfig } from "./config.js";
-export { diffDeclaredObserved } from "./diff.js";
-export type { DiffInput, DiffResult } from "./diff.js";
+export { computeTouchedSet, diffTouchedSets } from "./touched.js";
+export type { TouchKind, TouchedSet } from "./touched.js";
 export {
   checkLockfile,
   emptyLockfile,
   frameworkVersion,
+  hashesForTouched,
   hashSymbolSources,
   parseLockfile,
   playwrightTestVersion,
@@ -21,13 +22,6 @@ export {
   writeLockfile,
 } from "./lockfile.js";
 export type { LockfileExpectation, LockfileTestEntry, VibehardLockfile } from "./lockfile.js";
-export {
-  CodemodError,
-  extractDeclarations,
-  formatUsesArray,
-  rewriteDeclaration,
-} from "./declarations.js";
-export type { ExtractOptions, ExtractedDeclaration, ExtractedSpread, ExtractedUses, RewriteResult } from "./declarations.js";
 export {
   freePort,
   listTests,
@@ -55,7 +49,7 @@ export { formatVerifyReport, recordProject, verifyProject } from "./run.js";
 export { VibehardUsageError } from "./types.js";
 export type {
   ProjectVerifyResult,
-  RuntimeDeclaration,
+  RuntimeOptions,
   TestVerifyResult,
   TestVerifyStatus,
   VerifyProjectOptions,

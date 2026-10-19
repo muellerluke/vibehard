@@ -4,27 +4,35 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import type { SymbolId, SymbolRecord } from "../index.js";
+import { INDEXER_VERSION } from "../indexer/index.js";
+import type { TouchedSet } from "./touched.js";
 import { VibehardUsageError } from "./types.js";
 
 export interface LockfileTestEntry {
   file: string;
   titlePath: string[];
-  declared: SymbolId[];
-  /** sha256 of each declared symbol's exact source slice, by symbol ID. */
+  /** Every symbol this test touched at last record, by touch kind. */
+  touched: TouchedSet;
+  /** sha256 of each touched symbol's source, by symbol ID. */
   symbolHashes: Record<string, string>;
-  allowTransitive: string[];
-  allowedObserved: SymbolId[];
-  skipVerify?: string;
+  alwaysRun?: string;
 }
 
 export interface VibehardLockfile {
-  version: 1;
+  version: 2;
   framework: { name: string; version: string };
   configHash: string;
+  /** Indexer/reference-graph version the touched sets were built with. */
+  graphVersion: number;
   tests: Record<string, LockfileTestEntry>;
 }
 
-/** Hash the current source slice of every given symbol (file read once). */
+/**
+ * Hash the current source of every given symbol (file read once).
+ * Executable/value symbols hash their exact source slice; module
+ * symbols hash their leftover-statement slices; asset symbols hash
+ * the file's raw bytes.
+ */
 export function hashSymbolSources(
   rootDir: string,
   symbols: readonly SymbolRecord[],
@@ -37,14 +45,41 @@ export function hashSymbolSources(
   }
   const out: Record<string, string> = {};
   for (const [file, records] of byFile) {
-    const text = readFileSync(path.resolve(rootDir, file), "utf8");
+    let text: string | null = null;
     for (const record of records) {
-      out[record.id] = createHash("sha256")
-        .update(text.slice(record.startOffset, record.endOffset))
-        .digest("hex");
+      if (record.kind === "asset") {
+        out[record.id] = createHash("sha256")
+          .update(readFileSync(path.resolve(rootDir, file)))
+          .digest("hex");
+        continue;
+      }
+      if (text === null) text = readFileSync(path.resolve(rootDir, file), "utf8");
+      const hash = createHash("sha256");
+      if (record.hashSlices !== undefined) {
+        for (const slice of record.hashSlices) {
+          hash.update(text.slice(slice.startOffset, slice.endOffset));
+          hash.update("\0");
+        }
+      } else {
+        hash.update(text.slice(record.startOffset, record.endOffset));
+      }
+      out[record.id] = hash.digest("hex");
     }
   }
   return out;
+}
+
+/** Hashes for the symbols in a touched set. */
+export function hashesForTouched(
+  rootDir: string,
+  symbols: readonly SymbolRecord[],
+  touched: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const ids = new Set(Object.keys(touched));
+  return hashSymbolSources(
+    rootDir,
+    symbols.filter((s) => ids.has(s.id)),
+  );
 }
 
 const FRAMEWORK_PACKAGES: Record<string, readonly string[]> = {
@@ -83,9 +118,10 @@ export function emptyLockfile(
   frameworkName = "playwright",
 ): VibehardLockfile {
   return {
-    version: 1,
+    version: 2,
     framework: { name: frameworkName, version: frameworkVersion },
     configHash,
+    graphVersion: INDEXER_VERSION,
     tests: {},
   };
 }
@@ -100,21 +136,25 @@ export function serializeLockfile(lock: VibehardLockfile): string {
     for (const id of Object.keys(entry.symbolHashes).sort()) {
       symbolHashes[id] = entry.symbolHashes[id] ?? "";
     }
+    const touched: LockfileTestEntry["touched"] = {};
+    for (const id of Object.keys(entry.touched).sort()) {
+      const kind = entry.touched[id as SymbolId];
+      if (kind !== undefined) touched[id] = kind;
+    }
     const normalized: LockfileTestEntry = {
       file: entry.file,
       titlePath: [...entry.titlePath],
-      declared: [...entry.declared].sort(),
+      touched,
       symbolHashes,
-      allowTransitive: [...entry.allowTransitive].sort(),
-      allowedObserved: [...entry.allowedObserved].sort(),
     };
-    if (entry.skipVerify !== undefined) normalized.skipVerify = entry.skipVerify;
+    if (entry.alwaysRun !== undefined) normalized.alwaysRun = entry.alwaysRun;
     tests[key] = normalized;
   }
   const ordered: VibehardLockfile = {
-    version: 1,
+    version: 2,
     framework: lock.framework,
     configHash: lock.configHash,
+    graphVersion: lock.graphVersion,
     tests,
   };
   return `${JSON.stringify(ordered, null, 2)}\n`;
@@ -130,8 +170,16 @@ export function parseLockfile(text: string, file: string): VibehardLockfile {
     );
   }
   const lock = value as Partial<VibehardLockfile> | null;
-  if (lock === null || typeof lock !== "object" || lock.version !== 1 || typeof lock.tests !== "object" || lock.tests === null) {
-    throw new VibehardUsageError(`vibehard: unsupported lockfile format in ${file} (expected version 1)`);
+  if (lock === null || typeof lock !== "object" || typeof lock.tests !== "object" || lock.tests === null) {
+    throw new VibehardUsageError(`vibehard: unsupported lockfile format in ${file} (expected version 2)`);
+  }
+  if (lock.version === (1 as unknown)) {
+    throw new VibehardUsageError(
+      `vibehard: lockfile ${file} is version 1 (declaration-based); delete it and re-run \`vibehard record\``,
+    );
+  }
+  if (lock.version !== 2) {
+    throw new VibehardUsageError(`vibehard: unsupported lockfile format in ${file} (expected version 2)`);
   }
   return lock as VibehardLockfile;
 }
@@ -154,12 +202,13 @@ export function writeLockfile(lockfilePath: string, lock: VibehardLockfile): boo
 
 export interface LockfileExpectation {
   testId: string;
-  declared: SymbolId[] | null;
+  /** Touched set from the current run, or null when it could not be computed. */
+  touched: Readonly<Record<string, string>> | null;
   symbolHashes: Record<string, string>;
 }
 
 /**
- * Compare a lockfile against the current run's declarations and source
+ * Compare a lockfile against the current run's touched sets and source
  * hashes. Returns human-readable drift entries (empty = in agreement).
  */
 export function checkLockfile(
@@ -182,19 +231,24 @@ export function checkLockfile(
   if (lock.framework.name !== expectedName || lock.framework.version !== input.frameworkVersion) {
     drift.push(`lockfile framework ${lock.framework.name}@${lock.framework.version} differs from ${expectedName}@${input.frameworkVersion}`);
   }
+  if (lock.graphVersion !== INDEXER_VERSION) {
+    drift.push(
+      `lockfile graph version ${lock.graphVersion} differs from current ${INDEXER_VERSION} (re-run \`vibehard record\`)`,
+    );
+  }
   for (const exp of input.expectations) {
     const entry = lock.tests[exp.testId];
     if (entry === undefined) {
       drift.push(`${exp.testId}: missing from lockfile`);
       continue;
     }
-    const declaredNow = [...(exp.declared ?? [])].sort();
-    if (JSON.stringify([...entry.declared].sort()) !== JSON.stringify(declaredNow)) {
-      drift.push(`${exp.testId}: declared set in code differs from lockfile`);
+    const touchedNow = [...Object.keys(exp.touched ?? {})].sort();
+    if (exp.touched !== null && JSON.stringify(Object.keys(entry.touched).sort()) !== JSON.stringify(touchedNow)) {
+      drift.push(`${exp.testId}: touched set differs from lockfile`);
     }
-    for (const id of declaredNow) {
+    for (const id of touchedNow) {
       const expected = exp.symbolHashes[id];
-      if (expected === undefined) continue; // unknown symbol; diff reports it
+      if (expected === undefined) continue;
       if (entry.symbolHashes[id] !== expected) {
         drift.push(`${exp.testId}: source hash mismatch for ${id} (edited since last verify)`);
       }

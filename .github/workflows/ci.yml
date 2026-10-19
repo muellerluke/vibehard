@@ -26,7 +26,7 @@ jobs:
         working-directory: packages/vibehard
         run: >-
           npx vitest run
-          test/cli.test.ts test/config.test.ts test/declarations.test.ts
+          test/cli.test.ts test/config.test.ts test/touched.test.ts
           test/indexer.test.ts test/init.test.ts test/observer.test.ts
           test/playwright-adapter.test.ts test/puppeteer-adapter.test.ts
       - run: npx vibehard --help

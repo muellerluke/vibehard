@@ -11,9 +11,8 @@ const { describe: nodeDescribe, test: nodeTest } =
   nodeRequire("node:test") as typeof import("node:test");
 import { fileURLToPath } from "node:url";
 
-import type { SymbolId } from "../../index.js";
 import type { ScriptInput, V8FunctionCoverage } from "../../observer/types.js";
-import type { RuntimeDeclaration, VibehardTestOptions } from "../../verifier/types.js";
+import type { RuntimeOptions, VibehardTestOptions } from "../../verifier/types.js";
 import {
   ENV_ARTIFACT_DIR,
   artifactFileName,
@@ -24,16 +23,9 @@ import { embedCoverageEntry } from "../shared-coverage.js";
 export type { VibehardTestOptions } from "../../verifier/types.js";
 export { ENV_ARTIFACT_DIR, ENV_BASE_URL, ENV_RESOLVE_MAP } from "../playwright/artifact.js";
 
-/** Declaration options for a Puppeteer test or page (manifest: Declaration API). */
+/** Options for a Puppeteer test or page. */
 export interface VibehardPageOptions {
-  uses: SymbolId[];
-  allowTransitive?: string[];
-  skipVerify?: string;
-}
-
-/** Kept from Stage 0: identity helper for building shared declaration groups. */
-export function defineUses(opts: VibehardPageOptions): VibehardPageOptions {
-  return opts;
+  alwaysRun?: string;
 }
 
 /** Minimal structural shape of a Puppeteer CDP session. */
@@ -54,7 +46,7 @@ interface RawEntry {
 }
 
 interface Collector {
-  declared: RuntimeDeclaration;
+  options: RuntimeOptions;
   sessions: Map<PageLike, CdpSessionLike>;
   /** Last precise-coverage snapshot per page (taken again on close). */
   snapshots: Map<PageLike, RawEntry[]>;
@@ -100,25 +92,11 @@ function callerLocation(): { file: string; line: number } {
   return { file: "unknown", line: 0 };
 }
 
-function validateOptions(opts: VibehardPageOptions): RuntimeDeclaration {
-  if (!Array.isArray(opts.uses) || opts.uses.some((u) => typeof u !== "string")) {
-    throw new TypeError("vibehard: test options `uses` must be an array of symbol ID strings");
+function validateOptions(opts: VibehardPageOptions): RuntimeOptions {
+  if (opts.alwaysRun !== undefined && typeof opts.alwaysRun !== "string") {
+    throw new TypeError("vibehard: test options `alwaysRun` must be a reason string");
   }
-  if (
-    opts.allowTransitive !== undefined &&
-    (!Array.isArray(opts.allowTransitive) ||
-      opts.allowTransitive.some((u) => typeof u !== "string"))
-  ) {
-    throw new TypeError("vibehard: test options `allowTransitive` must be an array of strings");
-  }
-  if (opts.skipVerify !== undefined && typeof opts.skipVerify !== "string") {
-    throw new TypeError("vibehard: test options `skipVerify` must be a reason string");
-  }
-  return {
-    uses: [...opts.uses],
-    allowTransitive: opts.allowTransitive ?? [],
-    skipVerify: opts.skipVerify ?? null,
-  };
+  return { alwaysRun: opts.alwaysRun ?? null };
 }
 
 async function startCoverage(collector: Collector, page: PageLike): Promise<void> {
@@ -189,7 +167,7 @@ async function stopAll(collector: Collector): Promise<void> {
 export type VibehardTestBody = (t: TestContext) => Promise<void> | void;
 
 /**
- * Register a Node test-runner test with a vibehard declaration. Outside
+ * Register a Node test-runner test under vibehard observation. Outside
  * a vibehard run (plain `node --test`) this is exactly `node:test`'s
  * `test`; under `vibehard verify`/`record` it also collects browser
  * coverage from pages opened via `withVibehardPage` and writes the
@@ -206,7 +184,7 @@ export function describeTest(
   optsOrFn: VibehardPageOptions | VibehardTestBody,
   maybeFn?: VibehardTestBody,
 ): void {
-  let declared: RuntimeDeclaration = { uses: null, allowTransitive: [], skipVerify: null };
+  let options: RuntimeOptions = { alwaysRun: null };
   let fn: VibehardTestBody;
   if (typeof optsOrFn === "function") {
     fn = optsOrFn;
@@ -214,7 +192,7 @@ export function describeTest(
     if (maybeFn === undefined) {
       throw new TypeError(`vibehard: test "${title}" is missing its test function`);
     }
-    declared = validateOptions(optsOrFn);
+    options = validateOptions(optsOrFn);
     fn = maybeFn;
   }
   const location = callerLocation();
@@ -225,7 +203,7 @@ export function describeTest(
       return;
     }
     const collector: Collector = {
-      declared: { ...declared, allowTransitive: [...declared.allowTransitive] },
+      options: { ...options },
       sessions: new Map(),
       snapshots: new Map(),
       scripts: [],
@@ -247,13 +225,13 @@ export function describeTest(
     const dir = process.env[ENV_ARTIFACT_DIR] ?? "";
     mkdirSync(dir, { recursive: true });
     const artifact: VibehardArtifact = {
-      version: 1,
+      version: 2,
       file: location.file,
       line: location.line,
       title,
       titlePath,
       status,
-      declared: collector.declared,
+      options: collector.options,
       clientScripts: collector.scripts,
       errors,
     };
@@ -284,9 +262,9 @@ export function describe(name: string, fn: () => Promise<void> | void): void {
  * Open a page with JS coverage running (CDP precise coverage — the V8
  * function-range shape the observer consumes). Must be called inside a
  * `describeTest` body while vibehard is observing; outside a vibehard
- * run it is a plain `browser.newPage()`. When `opts` carries the
- * declaration and `describeTest` did not, it becomes the test's
- * declared set; conflicting declarations are an error.
+ * run it is a plain `browser.newPage()`. When `opts` carries
+ * `alwaysRun` and `describeTest` did not, it becomes the test's
+ * option; conflicting values are an error.
  */
 export async function withVibehardPage<P>(
   browser: { newPage(): Promise<P> },
@@ -302,11 +280,11 @@ export async function withVibehardPage<P>(
   }
   if (opts !== undefined) {
     const fromPage = validateOptions(opts);
-    if (collector.declared.uses === null) {
-      collector.declared = fromPage;
-    } else if (JSON.stringify(collector.declared.uses) !== JSON.stringify(fromPage.uses)) {
+    if (collector.options.alwaysRun === null) {
+      collector.options = fromPage;
+    } else if (collector.options.alwaysRun !== fromPage.alwaysRun) {
       throw new Error(
-        "vibehard: withVibehardPage `uses` conflicts with the describeTest declaration; declare the set in one place",
+        "vibehard: withVibehardPage `alwaysRun` conflicts with the describeTest option; set it in one place",
       );
     }
   }

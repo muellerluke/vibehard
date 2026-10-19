@@ -11,8 +11,8 @@ import {
   ENV_ARTIFACT_DIR,
   VIBEHARD_ANNOTATION_TYPE,
   artifactFileName,
-  decodeDeclaration,
-  encodeDeclaration,
+  decodeOptions,
+  encodeOptions,
   type VibehardArtifact,
 } from "./artifact.js";
 
@@ -25,15 +25,10 @@ export {
   ENV_RESOLVE_MAP,
   VIBEHARD_ANNOTATION_TYPE,
   artifactFileName,
-  decodeDeclaration,
-  encodeDeclaration,
+  decodeOptions,
+  encodeOptions,
   parseArtifact,
 } from "./artifact.js";
-
-/** Kept from Stage 0: identity helper for building shared declaration groups. */
-export function defineUses(opts: VibehardTestOptions): VibehardTestOptions {
-  return opts;
-}
 
 type TestBody = (args: PlaywrightTestArgs, testInfo: TestInfo) => Promise<void> | void;
 
@@ -44,7 +39,7 @@ interface VibehardCallable {
 
 type BaseTest = typeof base;
 
-/** The vibehard Playwright `test`: base test plus declaration-aware calls. */
+/** The vibehard Playwright `test`: base test plus options-aware calls. */
 export type VibehardTest = VibehardCallable &
   Pick<
     BaseTest,
@@ -128,13 +123,13 @@ const extended = base.extend<{ _vhCollector: Collector; _vhFinish: void }>({
       const dir = process.env[ENV_ARTIFACT_DIR] ?? "";
       mkdirSync(dir, { recursive: true });
       const artifact: VibehardArtifact = {
-        version: 1,
+        version: 2,
         file: testInfo.file,
         line: testInfo.line,
         title: testInfo.title,
         titlePath: [...testInfo.titlePath],
         status: testInfo.status ?? "unknown",
-        declared: decodeDeclaration(testInfo.annotations),
+        options: decodeOptions(testInfo.annotations),
         clientScripts: _vhCollector.scripts,
         errors: testInfo.errors.map((e) => e.message ?? String(e)).filter((s) => s !== ""),
       };
@@ -148,18 +143,8 @@ const extended = base.extend<{ _vhCollector: Collector; _vhFinish: void }>({
 });
 
 function validateOptions(opts: VibehardTestOptions): VibehardTestOptions {
-  if (!Array.isArray(opts.uses) || opts.uses.some((u) => typeof u !== "string")) {
-    throw new TypeError("vibehard: test options `uses` must be an array of symbol ID strings");
-  }
-  if (
-    opts.allowTransitive !== undefined &&
-    (!Array.isArray(opts.allowTransitive) ||
-      opts.allowTransitive.some((u) => typeof u !== "string"))
-  ) {
-    throw new TypeError("vibehard: test options `allowTransitive` must be an array of strings");
-  }
-  if (opts.skipVerify !== undefined && typeof opts.skipVerify !== "string") {
-    throw new TypeError("vibehard: test options `skipVerify` must be a reason string");
+  if (opts.alwaysRun !== undefined && typeof opts.alwaysRun !== "string") {
+    throw new TypeError("vibehard: test options `alwaysRun` must be a reason string");
   }
   return opts;
 }
@@ -204,7 +189,7 @@ function wrapCallable(callable: BaseCallable): VibehardCallable {
     try {
       callable(
         title,
-        { annotation: { type: VIBEHARD_ANNOTATION_TYPE, description: encodeDeclaration(opts) } },
+        { annotation: { type: VIBEHARD_ANNOTATION_TYPE, description: encodeOptions(opts) } },
         fn,
       );
     } finally {

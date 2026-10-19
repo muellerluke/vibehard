@@ -29,9 +29,8 @@ vi.mock("@playwright/test", () => ({
 
 import {
   artifactFileName,
-  decodeDeclaration,
-  defineUses,
-  encodeDeclaration,
+  decodeOptions,
+  encodeOptions,
   test,
 } from "../src/adapters/playwright/index.js";
 import type { VibehardTestOptions } from "../src/adapters/playwright/index.js";
@@ -47,43 +46,37 @@ beforeEach(() => {
 });
 
 describe("vibehard/playwright wrapper (mocked base)", () => {
-  it("test(title, fn) registers an undeclared annotation", () => {
+  it("test(title, fn) registers a plain annotation with no options", () => {
     const fn = async (): Promise<void> => undefined;
     test("plain", fn as never);
     expect(hoisted.calls).toHaveLength(1);
     expect(hoisted.calls[0]?.label).toBe("base.ext");
     expect(hoisted.calls[0]?.args[0]).toBe("plain");
     expect(hoisted.calls[0]?.args[2]).toBe(fn);
-    expect(decodeDeclaration([lastAnnotation()])).toEqual({
-      uses: null,
-      allowTransitive: [],
-      skipVerify: null,
-    });
+    expect(decodeOptions([lastAnnotation()])).toEqual({ alwaysRun: null });
   });
 
-  it("test(title, opts, fn) encodes the declaration", () => {
+  it("test(title, opts, fn) encodes alwaysRun", () => {
     const fn = async (): Promise<void> => undefined;
-    const opts: VibehardTestOptions = {
-      uses: ["src/a.ts#A"],
-      allowTransitive: ["src/lib/**"],
-      skipVerify: "flaky",
-    };
-    test("declared", opts, fn as never);
-    expect(decodeDeclaration([lastAnnotation()])).toEqual({
-      uses: ["src/a.ts#A"],
-      allowTransitive: ["src/lib/**"],
-      skipVerify: "flaky",
+    const opts: VibehardTestOptions = { alwaysRun: "flaky live feed" };
+    test("unstable", opts, fn as never);
+    expect(decodeOptions([lastAnnotation()])).toEqual({
+      alwaysRun: "flaky live feed",
     });
   });
 
   it("test.only routes through the wrapped only", () => {
-    test.only("focused", { uses: [] }, (async (): Promise<void> => undefined) as never);
+    test.only("focused", (async (): Promise<void> => undefined) as never);
     expect(hoisted.calls[0]?.label).toBe("base.ext.only");
   });
 
   it("rejects malformed options at collection time", () => {
     expect(() =>
-      test("bad", { uses: [42] } as unknown as VibehardTestOptions, (async () => undefined) as never),
+      test(
+        "bad",
+        { alwaysRun: 42 } as unknown as VibehardTestOptions,
+        (async () => undefined) as never,
+      ),
     ).toThrow(TypeError);
     expect(hoisted.calls).toHaveLength(0);
   });
@@ -95,15 +88,15 @@ describe("vibehard/playwright wrapper (mocked base)", () => {
   });
 
   it("encode/decode round-trips and artifact names are stable", () => {
-    const encoded = encodeDeclaration({ uses: ["a.ts#A"] });
-    expect(decodeDeclaration([{ type: "vibehard.uses", description: encoded }]).uses).toEqual([
-      "a.ts#A",
-    ]);
-    expect(decodeDeclaration([{ type: "other" }]).uses).toBeNull();
+    const encoded = encodeOptions({ alwaysRun: "reason" });
+    expect(
+      decodeOptions([{ type: "vibehard.options", description: encoded }]).alwaysRun,
+    ).toBe("reason");
+    expect(decodeOptions([{ type: "other" }]).alwaysRun).toBeNull();
+    expect(encodeOptions(null)).toBe(JSON.stringify({ alwaysRun: null }));
     expect(artifactFileName("/x/a.spec.ts", 3, "t")).toBe(artifactFileName("/x/a.spec.ts", 3, "t"));
     expect(artifactFileName("/x/a.spec.ts", 3, "t")).not.toBe(
       artifactFileName("/x/a.spec.ts", 4, "t"),
     );
-    expect(defineUses({ uses: [] })).toEqual({ uses: [] });
   });
 });

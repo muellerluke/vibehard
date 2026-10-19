@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -8,7 +8,7 @@ import ts from "typescript";
 import type { SymbolKind, SymbolRecord } from "../index.js";
 
 /** Bump when extraction rules change; part of every cache key. */
-const INDEXER_VERSION = 1;
+export const INDEXER_VERSION = 2;
 
 const ROUTE_METHODS = new Set([
   "GET",
@@ -41,7 +41,7 @@ export interface IndexCacheEntry {
 
 /** Serializable per-file cache, keyed by POSIX-relative file path. */
 export interface IndexCache {
-  version: 1;
+  version: 2;
   entries: Record<string, IndexCacheEntry>;
 }
 
@@ -70,7 +70,7 @@ export interface IndexResult {
 }
 
 export function createIndexCache(): IndexCache {
-  return { version: 1, entries: {} };
+  return { version: 2, entries: {} };
 }
 
 /**
@@ -98,18 +98,20 @@ export async function indexProject(
   const cache =
     options.cache === undefined || options.cache === null
       ? null
-      : options.cache.version === 1
+      : options.cache.version === 2
         ? options.cache
         : createIndexCache();
 
   const stats: IndexStats = { filesTotal: 0, filesParsed: 0, cacheHits: 0 };
   const allSymbols: SymbolRecord[] = [];
   const importEntries: Array<[string, string[]]> = [];
+  const sourceFilesByRel = new Map<string, ts.SourceFile>();
 
   for (const sourceFile of program.getSourceFiles()) {
     if (sourceFile.isDeclarationFile) continue;
     const rel = relativePosix(root, sourceFile.fileName);
     if (rel === null || !isIndexablePath(rel)) continue;
+    sourceFilesByRel.set(rel, sourceFile);
 
     stats.filesTotal += 1;
     const hash = contentHash(sourceFile.text);
@@ -132,9 +134,17 @@ export async function indexProject(
     ]);
   }
 
+  const deduped = dedupeAndSort(allSymbols);
+  const assets = collectAssetSymbols(tsApi, sourceFilesByRel, root);
+  for (const asset of assets) {
+    if (!deduped.some((s) => s.id === asset.id)) deduped.push(asset);
+  }
+  deduped.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  computeReferences(tsApi, program, sourceFilesByRel, deduped, root);
+
   return {
     rootDir: root,
-    symbols: dedupeAndSort(allSymbols),
+    symbols: deduped,
     imports: new Map(
       importEntries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     ),
@@ -161,6 +171,10 @@ export function findEnclosingSymbol(
   let bestSize = Number.POSITIVE_INFINITY;
   for (const symbol of symbols) {
     if (symbol.file !== file) continue;
+    // The whole-file `module` symbol contains everything; it is a
+    // fallback for callers that ask for it explicitly, never the
+    // answer here (observer host detection depends on null-outside).
+    if (symbol.kind === "module") continue;
     if (symbol.startOffset > startOffset || endOffset > symbol.endOffset) {
       continue;
     }
@@ -318,10 +332,14 @@ function extractSymbols(
     } else if (tsApi.isVariableStatement(stmt)) {
       const exported = hasModifier(tsApi, stmt, tsApi.SyntaxKind.ExportKeyword);
       for (const decl of stmt.declarationList.declarations) {
-        if (!tsApi.isIdentifier(decl.name) || decl.initializer === undefined) {
+        if (!tsApi.isIdentifier(decl.name)) {
           continue;
         }
         const name = decl.name.text;
+        if (decl.initializer === undefined) {
+          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
+          continue;
+        }
         const init = unwrapExpression(tsApi, decl.initializer);
         if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
           let kind: SymbolKind = tsApi.isArrowFunction(init)
@@ -332,9 +350,12 @@ function extractSymbols(
           }
           out.push(makeRecord(tsApi, sourceFile, rel, decl, name, kind));
         } else if (tsApi.isObjectLiteralExpression(init)) {
+          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
           extractObjectMethods(tsApi, sourceFile, rel, init, name, out);
         } else if (tsApi.isClassExpression(init)) {
           extractClassMembers(tsApi, sourceFile, rel, init, name, out);
+        } else {
+          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
         }
       }
     } else if (tsApi.isExportAssignment(stmt)) {
@@ -363,8 +384,13 @@ function extractSymbols(
           out,
         );
       } else if (tsApi.isObjectLiteralExpression(expr)) {
+        out.push(makeRecord(tsApi, sourceFile, rel, stmt, "default", "value"));
         extractObjectMethods(tsApi, sourceFile, rel, expr, "default", out);
+      } else {
+        out.push(makeRecord(tsApi, sourceFile, rel, stmt, "default", "value"));
       }
+    } else if (tsApi.isEnumDeclaration(stmt)) {
+      out.push(makeRecord(tsApi, sourceFile, rel, stmt, stmt.name.text, "value"));
     }
   }
 
@@ -376,6 +402,32 @@ function extractSymbols(
       }
     }
   }
+
+  // One module symbol per file covering leftover top-level lines
+  // (imports, expression statements, type-only declarations). Its range
+  // spans the file so any line not in a smaller symbol still maps; its
+  // hash covers only the leftover statement slices.
+  const hashSlices: { startOffset: number; endOffset: number }[] = [];
+  for (const stmt of sourceFile.statements) {
+    if (
+      tsApi.isFunctionDeclaration(stmt) ||
+      tsApi.isClassDeclaration(stmt) ||
+      tsApi.isVariableStatement(stmt) ||
+      tsApi.isExportAssignment(stmt) ||
+      tsApi.isEnumDeclaration(stmt)
+    ) {
+      continue;
+    }
+    hashSlices.push({ startOffset: stmt.getStart(sourceFile), endOffset: stmt.getEnd() });
+  }
+  const moduleRecord = makeRecord(tsApi, sourceFile, rel, sourceFile, "<module>", "module");
+  moduleRecord.startOffset = 0;
+  moduleRecord.endOffset = sourceFile.text.length;
+  moduleRecord.startLine = 1;
+  moduleRecord.endLine =
+    sourceFile.getLineAndCharacterOfPosition(Math.max(0, sourceFile.text.length - 1)).line + 1;
+  moduleRecord.hashSlices = hashSlices;
+  out.push(moduleRecord);
   return out;
 }
 
@@ -412,15 +464,28 @@ function extractClassMembers(
         makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "method"),
       );
     } else if (tsApi.isPropertyDeclaration(member)) {
-      if (member.initializer === undefined) continue;
       const name = memberName(tsApi, member.name);
       if (name === null) continue;
+      if (member.initializer === undefined) {
+        out.push(
+          makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "value"),
+        );
+        continue;
+      }
       const init = unwrapExpression(tsApi, member.initializer);
       if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
         out.push(
           makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "method"),
         );
+      } else {
+        out.push(
+          makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "value"),
+        );
       }
+    } else if (tsApi.isClassStaticBlockDeclaration(member)) {
+      out.push(
+        makeRecord(tsApi, sourceFile, rel, member, `${className}.<static>`, "value"),
+      );
     }
   }
 }
@@ -514,6 +579,287 @@ function resolvedImportEdges(
     edges.add(rel);
   }
   return [...edges].sort();
+}
+
+const ASSET_EXTENSIONS = new Set([
+  ".json",
+  ".css",
+  ".scss",
+  ".svg",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".txt",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".xml",
+  ".csv",
+]);
+
+function isAssetSpecifier(specifier: string): boolean {
+  const clean = specifier.split(/[?#]/)[0] ?? specifier;
+  const ext = path.posix.extname(clean).toLowerCase();
+  return ASSET_EXTENSIONS.has(ext);
+}
+
+function resolveAssetFile(
+  root: string,
+  fromFileRel: string,
+  specifier: string,
+): string | null {
+  if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
+    // Bare specifiers resolve into packages; only project-relative
+    // asset imports become symbols (package changes stay full-run).
+    if (!specifier.startsWith("@/")) return null;
+  }
+  const raw = specifier.split(/[?#]/)[0] ?? specifier;
+  const clean = raw.replace(/^@\//, "src/");
+  const abs = clean.startsWith("/")
+    ? path.resolve(root, `.${clean}`)
+    : raw.startsWith("@/")
+      ? path.resolve(root, clean)
+      : path.resolve(root, path.posix.dirname(fromFileRel), clean);
+  const rel = relativePosix(root, abs);
+  if (rel === null || !existsSync(abs) || !statSync(abs).isFile()) return null;
+  return rel;
+}
+
+function collectAssetSymbols(
+  tsApi: typeof ts,
+  sourceFilesByRel: ReadonlyMap<string, ts.SourceFile>,
+  root: string,
+): SymbolRecord[] {
+  const byId = new Map<string, SymbolRecord>();
+  for (const [rel, sourceFile] of sourceFilesByRel) {
+    const visit = (node: ts.Node): void => {
+      let specifier: string | null = null;
+      if (
+        (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) &&
+        node.moduleSpecifier !== undefined &&
+        tsApi.isStringLiteral(node.moduleSpecifier)
+      ) {
+        specifier = node.moduleSpecifier.text;
+      } else if (
+        tsApi.isCallExpression(node) &&
+        node.expression.kind === tsApi.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0 &&
+        tsApi.isStringLiteral(node.arguments[0])
+      ) {
+        specifier = node.arguments[0].text;
+      }
+      if (specifier !== null && isAssetSpecifier(specifier)) {
+        const assetRel = resolveAssetFile(root, rel, specifier);
+        if (assetRel !== null) {
+          const id = `${assetRel}#<file>`;
+          if (!byId.has(id)) {
+            let length = 0;
+            let lines = 1;
+            try {
+              const data = readFileSync(path.resolve(root, assetRel));
+              length = data.length;
+              lines = Math.max(1, data.toString("utf8").split("\n").length);
+            } catch {
+              // existsSync was checked in resolveAssetFile
+            }
+            byId.set(id, {
+              id,
+              file: assetRel,
+              qualifiedName: "<file>",
+              kind: "asset",
+              startOffset: 0,
+              endOffset: length,
+              startLine: 1,
+              endLine: lines,
+              references: [],
+            });
+          }
+        }
+      }
+      tsApi.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return [...byId.values()];
+}
+
+/** Smallest non-module symbol in `file` fully containing [start, end). */
+function smallestContaining(
+  symbolsByFile: ReadonlyMap<string, SymbolRecord[]>,
+  file: string,
+  start: number,
+  end: number,
+): SymbolRecord | null {
+  let best: SymbolRecord | null = null;
+  let bestSize = Number.POSITIVE_INFINITY;
+  for (const symbol of symbolsByFile.get(file) ?? []) {
+    if (symbol.kind === "module" || symbol.kind === "asset") continue;
+    if (symbol.startOffset > start || end > symbol.endOffset) continue;
+    const size = symbol.endOffset - symbol.startOffset;
+    if (size < bestSize) {
+      best = symbol;
+      bestSize = size;
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve every identifier inside each symbol to the symbol that
+ * declares it, via the TypeChecker. Module symbols only scan their
+ * leftover-statement slices. Imported assets become edges from the
+ * importing file's module symbol and from any symbol referencing an
+ * imported binding whose declaration cannot be resolved to app code.
+ */
+function computeReferences(
+  tsApi: typeof ts,
+  program: ts.Program,
+  sourceFilesByRel: ReadonlyMap<string, ts.SourceFile>,
+  symbols: SymbolRecord[],
+  root: string,
+): void {
+  let checker: ts.TypeChecker;
+  try {
+    checker = program.getTypeChecker();
+  } catch {
+    for (const s of symbols) s.references = s.references ?? [];
+    return;
+  }
+  const symbolsByFile = new Map<string, SymbolRecord[]>();
+  for (const s of symbols) {
+    const list = symbolsByFile.get(s.file) ?? [];
+    list.push(s);
+    symbolsByFile.set(s.file, list);
+  }
+  const moduleByFile = new Map<string, SymbolRecord>();
+  for (const s of symbols) if (s.kind === "module") moduleByFile.set(s.file, s);
+
+  const declarationSymbol = (decl: ts.Declaration): SymbolRecord | null => {
+    const declFile = decl.getSourceFile();
+    const rel = relativePosix(root, declFile.fileName);
+    if (rel === null || !isIndexablePath(rel)) return null;
+    const start = decl.getStart(declFile);
+    const end = decl.getEnd();
+    return (
+      smallestContaining(symbolsByFile, rel, start, end) ??
+      smallestContaining(symbolsByFile, rel, start, start + 1) ??
+      moduleByFile.get(rel) ??
+      null
+    );
+  };
+
+  const resolveIdentifier = (id: ts.Identifier, fromRel: string): SymbolRecord | null => {
+    let sym: ts.Symbol | undefined;
+    try {
+      sym = checker.getSymbolAtLocation(id);
+    } catch {
+      return null;
+    }
+    if (sym === undefined) return null;
+    let target = sym;
+    try {
+      if ((sym.flags & tsApi.SymbolFlags.Alias) !== 0) {
+        target = checker.getAliasedSymbol(sym);
+      }
+    } catch {
+      target = sym;
+    }
+    for (const decl of target.declarations ?? []) {
+      const found = declarationSymbol(decl);
+      if (found !== null) return found;
+    }
+    // Unresolved declaration (e.g. a JSON import binding): fall back to
+    // the original symbol's declarations, then to an asset edge keyed
+    // by the import specifier in the referring file.
+    for (const decl of sym.declarations ?? []) {
+      if (
+        tsApi.isImportSpecifier(decl) ||
+        tsApi.isImportClause(decl) ||
+        tsApi.isNamespaceImport(decl)
+      ) {
+        let node: ts.Node = decl;
+        while (!tsApi.isImportDeclaration(node)) {
+          if (node.parent === undefined) break;
+          node = node.parent;
+        }
+        if (tsApi.isImportDeclaration(node) && tsApi.isStringLiteral(node.moduleSpecifier)) {
+          const specifier = node.moduleSpecifier.text;
+          if (isAssetSpecifier(specifier)) {
+            const assetRel = resolveAssetFile(root, fromRel, specifier);
+            if (assetRel !== null) {
+              return symbols.find((s) => s.id === `${assetRel}#<file>`) ?? null;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  for (const [rel, sourceFile] of sourceFilesByRel) {
+    const fileSymbols = symbolsByFile.get(rel) ?? [];
+    const refsBySymbol = new Map<string, Set<string>>();
+    for (const s of fileSymbols) refsBySymbol.set(s.id, new Set(s.references ?? []));
+
+    const attribute = (node: ts.Node): SymbolRecord | null => {
+      const start = node.getStart(sourceFile);
+      const owner = smallestContaining(symbolsByFile, rel, start, start + 1);
+      if (owner !== null) return owner;
+      return moduleByFile.get(rel) ?? null;
+    };
+
+    const visit = (node: ts.Node): void => {
+      // Import/export binding names are not uses; usage identifiers
+      // inside symbols carry the real edges. Descending here would
+      // attribute every imported declaration to the module symbol.
+      if (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) return;
+      if (tsApi.isIdentifier(node)) {
+        // Declaration names and property names that bind are handled by
+        // resolution returning the symbol itself; self-edges dropped.
+        const owner = attribute(node);
+        if (owner !== null) {
+          // Module owners only claim identifiers inside leftover slices;
+          // identifiers inside a named symbol were owned above. A node
+          // attributed to module is by construction outside every
+          // smaller symbol, which matches the leftover definition.
+          const target = resolveIdentifier(node, rel);
+          if (target !== null && target.id !== owner.id) {
+            refsBySymbol.get(owner.id)?.add(target.id);
+          }
+        }
+      }
+      tsApi.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+
+    // Side-effect and namespace asset imports may name no binding:
+    // attribute them to the module symbol.
+    const visitImports = (node: ts.Node): void => {
+      if (
+        tsApi.isImportDeclaration(node) &&
+        tsApi.isStringLiteral(node.moduleSpecifier) &&
+        isAssetSpecifier(node.moduleSpecifier.text)
+      ) {
+        const assetRel = resolveAssetFile(root, rel, node.moduleSpecifier.text);
+        const mod = moduleByFile.get(rel);
+        if (assetRel !== null && mod !== undefined) {
+          refsBySymbol.get(mod.id)?.add(`${assetRel}#<file>`);
+        }
+      }
+      tsApi.forEachChild(node, visitImports);
+    };
+    visitImports(sourceFile);
+
+    for (const s of fileSymbols) {
+      s.references = [...(refsBySymbol.get(s.id) ?? [])].sort();
+    }
+  }
+  for (const s of symbols) {
+    if (s.references === undefined) s.references = [];
+  }
 }
 
 function makeRecord(

@@ -29,16 +29,16 @@ Usage: vibehard <command> [options]
 
 Commands:
   init      Detect framework/app shape, write vibehard.config
-  record    Run tests under observation, (re)write declarations
-  verify    Run tests under observation, fail on missing/extra symbols
+  record    Run tests under observation, (re)write touched sets in the lockfile
+  verify    Run tests under observation, fail on touched-set drift
   test      Select and run only tests affected by the change
-  explain   Show declared vs observed set for a test or symbol
+  explain   Show the recorded touched set for a test or symbol
 
 Options:
   --help       Print this help
   --version    Print version
   --json       Machine-readable output (every command)
-  --ci         verify: check the lockfile without writing; enforce skipVerify budget
+  --ci         verify: check the lockfile without writing; enforce alwaysRun budget
   --config     Path to vibehard.config (record/verify/test/explain;
                for init, the output path to write)
   --base <ref> test: compare the working tree against this ref (default:
@@ -50,7 +50,7 @@ record and verify accept optional filter arguments matched against
 test file paths and titles. explain takes one test filter or symbol ID
 (<file>#<qualified-name>) argument.
 
-Exit codes: 0 pass, 1 test failure (framework), 2 verification mismatch,
+Exit codes: 0 pass, 1 test failure (framework), 2 verification drift,
 3 usage/config error, not implemented yet, or unsafe selection under
 --dry-run. Without --dry-run an unsafe selection runs the full suite.
 `;

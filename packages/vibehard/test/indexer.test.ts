@@ -126,7 +126,13 @@ describe("AT-02: indexer on fixtures/tiny-app", () => {
       const text = readFileSync(path.join(TINY_APP, record.file), "utf8");
       const slice = text.slice(record.startOffset, record.endOffset);
       expect(slice.startsWith(heads[record.id] ?? "")).toBe(true);
-      expect(slice.trimEnd().endsWith("}")).toBe(true);
+      // Executable declarations end with their body; value/module
+      // symbols end with their declaration / the whole file.
+      if (record.kind !== "value" && record.kind !== "module") {
+        expect(slice.trimEnd().endsWith("}")).toBe(true);
+      } else {
+        expect(slice.length).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -163,9 +169,15 @@ describe("AT-02: indexer on fixtures/tiny-app", () => {
 
 describe("AT-03: symbol ID stability", () => {
   const expectedIds = [
+    "src/app/api/coupons/route.ts#<module>",
     "src/app/api/coupons/route.ts#POST",
+    "src/app/checkout/page.tsx#<module>",
     "src/app/checkout/page.tsx#CheckoutPage",
+    "src/lib/cart.ts#<module>",
     "src/lib/cart.ts#Cart.addItem",
+    "src/lib/cart.ts#Cart.items",
+    "src/lib/format.ts#<module>",
+    "src/lib/format.ts#CENTS_PER_DOLLAR",
     "src/lib/format.ts#formatPrice",
   ];
 
@@ -203,7 +215,11 @@ describe("AT-03: symbol ID stability", () => {
       ),
     );
     expect(ids(after)).toEqual(ids(before));
-    expect(ids(before)).toEqual(["src/two.ts#alpha", "src/two.ts#beta"]);
+    expect(ids(before)).toEqual([
+      "src/two.ts#<module>",
+      "src/two.ts#alpha",
+      "src/two.ts#beta",
+    ]);
   }, TIMEOUT);
 
   it("renaming a function changes exactly its own ID", async () => {
@@ -221,7 +237,7 @@ describe("AT-03: symbol ID stability", () => {
     // Untouched files keep identical records, ranges included.
     const byId = new Map(result.symbols.map((s) => [s.id, s]));
     for (const record of loadExpected()) {
-      if (record.id === "src/lib/cart.ts#Cart.addItem") continue;
+      if (record.file === "src/lib/cart.ts") continue;
       expect(byId.get(record.id)).toEqual(record);
     }
   }, TIMEOUT);
@@ -271,8 +287,11 @@ describe("AT-04: enclosing-symbol lookup", () => {
 
   it("returns null outside every named symbol", () => {
     expect(lookup("sku: string")).toBeNull(); // inside the CartItem interface
-    // Class field initializer: no enclosing named symbol in Stage 1.
-    expect(lookup("= []")).toBeNull();
+  });
+
+  it("indexes class fields as value symbols enclosing their initializer", () => {
+    // `readonly items: CartItem[] = [];` in tiny-app's Cart class.
+    expect(lookup("= []")?.id).toBe("src/lib/cart.ts#Cart.items");
   });
 
   it("returns null for partial overlaps, reversed ranges, unknown files", () => {
@@ -344,9 +363,10 @@ describe("synthetic projects: JS/JSX and remaining symbol kinds", () => {
     expect(byId.get("src/app/page.tsx#default")?.kind).toBe("page-export");
     expect(byId.get("src/app/api/route.ts#GET")?.kind).toBe("route-export");
 
-    // No bare class/object records; nested named functions are folded.
+    // No bare class records; an object binding is a value symbol whose
+    // methods are smaller symbols inside it. Nested functions fold.
     expect(byId.has("src/handlers.ts#Box")).toBe(false);
-    expect(byId.has("src/handlers.ts#handlers")).toBe(false);
+    expect(byId.get("src/handlers.ts#handlers")?.kind).toBe("value");
     expect(
       result.symbols.some((s) => s.qualifiedName.includes("innerHelper")),
     ).toBe(false);
@@ -405,10 +425,10 @@ describe("content-hash cache", () => {
 
   it("ignores a cache with a mismatched version", async () => {
     const dir = copyTinyApp();
-    const bogus = { version: 2, entries: {} } as unknown as IndexCache;
+    const bogus = { version: 99, entries: {} } as unknown as IndexCache;
     const result = await indexProject(dir, { cache: bogus });
     expect(result.cache).not.toBe(bogus);
-    expect(result.cache?.version).toBe(1);
+    expect(result.cache?.version).toBe(2);
     expect(result.stats.filesParsed).toBe(4);
   }, TIMEOUT);
 });
@@ -456,6 +476,75 @@ describe("Stage 5: Next.js shapes", () => {
     expect(found.some((id) => id.includes(".next"))).toBe(false);
     const action = result.symbols.find((s) => s.id === "src/app/actions.ts#saveNote");
     expect(action?.kind).toBe("function");
+  }, TIMEOUT);
+});
+
+describe("value/module/asset symbols and references", () => {
+  it("indexes constants, enums, class fields, module symbols, assets, and reference edges", async () => {
+    const dir = writeProject({
+      "src/lib/pricing.ts": [
+        "export const TAX_RATE = 0.2;",
+        "export enum Tier { Basic, Pro }",
+        "export function applyTax(cents: number): number {",
+        "  return cents * (1 + TAX_RATE);",
+        "}",
+        "export class Pricer {",
+        "  rate = TAX_RATE;",
+        "  total(cents: number): number { return applyTax(cents) * this.rate; }",
+        "}",
+        "",
+      ].join("\n"),
+      "src/lib/page.ts": [
+        'import data from "./data.json";',
+        'import { applyTax } from "./pricing";',
+        "export function renderPrice(cents: number): string {",
+        "  return `${data.label}:${applyTax(cents)}`;",
+        "}",
+        "",
+      ].join("\n"),
+      "src/lib/data.json": '{"label":"total"}\n',
+    });
+    const result = await indexProject(dir);
+    const byId = new Map(result.symbols.map((s) => [s.id, s]));
+
+    expect(byId.get("src/lib/pricing.ts#TAX_RATE")?.kind).toBe("value");
+    expect(byId.get("src/lib/pricing.ts#Tier")?.kind).toBe("value");
+    expect(byId.get("src/lib/pricing.ts#Pricer.rate")?.kind).toBe("value");
+    expect(byId.get("src/lib/pricing.ts#<module>")?.kind).toBe("module");
+    expect(byId.get("src/lib/data.json#<file>")?.kind).toBe("asset");
+
+    // A function that reads a top-level constant references its symbol.
+    expect(byId.get("src/lib/pricing.ts#applyTax")?.references).toContain(
+      "src/lib/pricing.ts#TAX_RATE",
+    );
+    // Class field -> constant, method -> field and helper.
+    expect(byId.get("src/lib/pricing.ts#Pricer.rate")?.references).toContain(
+      "src/lib/pricing.ts#TAX_RATE",
+    );
+    expect(byId.get("src/lib/pricing.ts#Pricer.total")?.references).toContain(
+      "src/lib/pricing.ts#Pricer.rate",
+    );
+    expect(byId.get("src/lib/pricing.ts#Pricer.total")?.references).toContain(
+      "src/lib/pricing.ts#applyTax",
+    );
+    // Cross-file function reference and JSON asset reference.
+    expect(byId.get("src/lib/page.ts#renderPrice")?.references).toContain(
+      "src/lib/pricing.ts#applyTax",
+    );
+    expect(byId.get("src/lib/page.ts#renderPrice")?.references).toContain(
+      "src/lib/data.json#<file>",
+    );
+    // The importing file's module symbol also references the asset.
+    expect(byId.get("src/lib/page.ts#<module>")?.references).toContain(
+      "src/lib/data.json#<file>",
+    );
+    // Module hash slices cover import lines, not function bodies.
+    const pageText = readFileSync(path.join(dir, "src/lib/page.ts"), "utf8");
+    const slices = (byId.get("src/lib/page.ts#<module>")?.hashSlices ?? [])
+      .map((s) => pageText.slice(s.startOffset, s.endOffset))
+      .join("\n");
+    expect(slices).toContain("import data");
+    expect(slices).not.toContain("applyTax(cents)");
   }, TIMEOUT);
 });
 

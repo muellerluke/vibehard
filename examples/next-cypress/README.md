@@ -35,5 +35,5 @@ How coverage works here (Cypress has no V8 range API):
   routes execute at build time and cannot be observed.
 - Wiring: `registerVibehardSupport()` in `cypress/support/e2e.js`,
   `registerVibehardTasks(on)` in `cypress.config.mjs`
-  `setupNodeEvents`, declarations via `uses([...])` as the first
-  statement of each test. Plain `cypress run` is unaffected.
+  `setupNodeEvents`. Specs need no vibehard code; `vibehard record`
+  maps what each test touches. Plain `cypress run` is unaffected.

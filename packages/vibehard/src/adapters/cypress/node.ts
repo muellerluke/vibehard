@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import type { RuntimeDeclaration } from "../../verifier/types.js";
+import type { RuntimeOptions } from "../../verifier/types.js";
 import { ENV_ARTIFACT_DIR, artifactFileName, type VibehardArtifact } from "../playwright/artifact.js";
 import { VIBEHARD_TASK } from "./index.js";
 
@@ -11,7 +11,7 @@ interface ArtifactPayload {
   title: string;
   titlePath: string[];
   status: string;
-  declared: RuntimeDeclaration;
+  options: RuntimeOptions;
   istanbul: Record<string, unknown> | null;
 }
 
@@ -27,8 +27,8 @@ function validPayload(value: unknown): value is ArtifactPayload {
     typeof v.title === "string" &&
     Array.isArray(v.titlePath) &&
     typeof v.status === "string" &&
-    v.declared !== null &&
-    typeof v.declared === "object"
+    v.options !== null &&
+    typeof v.options === "object"
   );
 }
 
@@ -50,16 +50,14 @@ export function registerVibehardTasks(on: OnFn): void {
       if (dir === undefined || dir === "" || !validPayload(payload)) return null;
       mkdirSync(dir, { recursive: true });
       const artifact: VibehardArtifact = {
-        version: 1,
+        version: 2,
         file: currentSpec,
         line: 0,
         title: payload.title,
         titlePath: payload.titlePath,
         status: payload.status === "passed" ? "passed" : payload.status,
-        declared: {
-          uses: payload.declared.uses ?? null,
-          allowTransitive: payload.declared.allowTransitive ?? [],
-          skipVerify: payload.declared.skipVerify ?? null,
+        options: {
+          alwaysRun: payload.options.alwaysRun ?? null,
         },
         clientScripts: [],
         istanbul: payload.istanbul ?? null,

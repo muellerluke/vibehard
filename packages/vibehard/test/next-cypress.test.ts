@@ -110,7 +110,7 @@ beforeAll(async () => {
 }, T);
 
 describe("AT-23: Cypress adapter on examples/next-cypress", () => {
-  it("AT-07 equivalent: exact declarations pass verify (lockfile current)", async () => {
+  it("AT-07 equivalent: recorded touched sets pass verify (lockfile current)", async () => {
     const r = await runCli(["verify", "--json"], { cwd: EXAMPLE });
     expect(r.exitCode, r.stdout + r.stderr).toBe(0);
     const parsed = JSON.parse(r.stdout) as ProjectVerifyResult & { ok: boolean };
@@ -122,33 +122,47 @@ describe("AT-23: Cypress adapter on examples/next-cypress", () => {
     expect(home?.observed).toContain(COUNTER);
   }, T);
 
-  it("AT-08 equivalent: removing a used symbol fails as extra", async () => {
-    const dir = await makeCopy((d) =>
-      edit(d, "cypress/e2e/app.cy.js", (text) =>
-        text.replace(`'${COUNTER}', `, ""),
-      ),
-    );
+  it("a touched symbol missing from the lockfile fails verify as drift (added)", async () => {
+    const dir = await makeCopy((d) => {
+      const lockPath = path.join(d, "vibehard.lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
+        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
+      };
+      const entry = lock.tests[HOME];
+      if (entry === undefined) throw new Error("home entry missing");
+      delete entry.touched[COUNTER];
+      delete entry.symbolHashes[COUNTER];
+      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
+`);
+    });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([COUNTER]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toContain(COUNTER);
   }, T);
 
-  it("AT-09 equivalent: adding an unused symbol fails as missing", async () => {
-    const dir = await makeCopy((d) =>
-      edit(d, "cypress/e2e/app.cy.js", (text) =>
-        text.replace("'src/app/page.tsx#HomePage'", `'${DISCOUNT}', 'src/app/page.tsx#HomePage'`),
-      ),
-    );
+  it("a lockfile symbol no longer touched fails verify as drift (removed)", async () => {
+    const dir = await makeCopy((d) => {
+      const lockPath = path.join(d, "vibehard.lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
+        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
+      };
+      const entry = lock.tests[HOME];
+      if (entry === undefined) throw new Error("home entry missing");
+      entry.touched[DISCOUNT] = "direct";
+      entry.symbolHashes[DISCOUNT] = "0".repeat(64);
+      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
+`);
+    });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.missing).toEqual([DISCOUNT]);
+    expect(r.status).toBe("drift");
+    expect(r.removed).toContain(DISCOUNT);
   }, T);
 
-  it("AT-10 equivalent: exercising a new app symbol fails as extra", async () => {
+  it("AT-10 equivalent: exercising a new app symbol fails verify as drift", async () => {
     const dir = await makeCopy((d) =>
       edit(d, "src/app/page.tsx", (text) =>
         text
@@ -162,24 +176,23 @@ describe("AT-23: Cypress adapter on examples/next-cypress", () => {
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
     expect(result.exitCode).toBe(2);
-    expect(r.status).toBe("mismatch");
-    expect(r.extra).toEqual([DISCOUNT]);
+    expect(r.status).toBe("drift");
+    expect(r.added).toContain(DISCOUNT);
   }, T);
 
-  it("record rewrites uses() from observed; twice is a no-op", async () => {
+  it("record writes the lockfile without touching specs; twice is a no-op", async () => {
     const dir = await makeCopy((d) => {
-      edit(d, "cypress/e2e/app.cy.js", (text) =>
-        text.replace(/uses\(\[\.\.\.appShell[^\]]*\]\);/, "uses([...appShell]);"),
-      );
       rmSync(path.join(d, "vibehard.lock.json"), { force: true });
     });
+    const specBefore = readFileSync(path.join(dir, "cypress/e2e/app.cy.js"), "utf8");
     const first = await recordProject({ rootDir: dir, filter: ["home page"] });
     expect(only(first).status).toBe("recorded");
-    const afterFirst = readFileSync(path.join(dir, "cypress/e2e/app.cy.js"), "utf8");
-    expect(afterFirst).toContain("'src/app/page.tsx#HomePage'");
+    expect(only(first).touched?.["src/app/page.tsx#HomePage"]).toBeDefined();
+    expect(readFileSync(path.join(dir, "cypress/e2e/app.cy.js"), "utf8")).toBe(specBefore);
+    const lockAfterFirst = readFileSync(path.join(dir, "vibehard.lock.json"), "utf8");
     const second = await recordProject({ rootDir: dir, filter: ["home page"] });
-    expect(only(second).changed).not.toBe(true);
-    expect(readFileSync(path.join(dir, "cypress/e2e/app.cy.js"), "utf8")).toBe(afterFirst);
+    expect(only(second).status).toBe("recorded");
+    expect(readFileSync(path.join(dir, "vibehard.lock.json"), "utf8")).toBe(lockAfterFirst);
   }, T);
 
   it("selection: a Counter change selects and runs exactly the home test", async () => {

@@ -1,33 +1,15 @@
 [
   {
-    "id": "src/lib/cart.ts#Cart.addItem",
-    "file": "src/lib/cart.ts",
-    "qualifiedName": "Cart.addItem",
-    "kind": "method",
-    "startOffset": 146,
-    "endOffset": 356,
-    "startLine": 10,
-    "endLine": 17
-  },
-  {
-    "id": "src/lib/format.ts#formatPrice",
-    "file": "src/lib/format.ts",
-    "qualifiedName": "formatPrice",
-    "kind": "arrow-function",
-    "startOffset": 13,
-    "endOffset": 98,
+    "id": "src/app/api/coupons/route.ts#<module>",
+    "file": "src/app/api/coupons/route.ts",
+    "qualifiedName": "<module>",
+    "kind": "module",
+    "startOffset": 0,
+    "endOffset": 368,
     "startLine": 1,
-    "endLine": 3
-  },
-  {
-    "id": "src/app/checkout/page.tsx#CheckoutPage",
-    "file": "src/app/checkout/page.tsx",
-    "qualifiedName": "CheckoutPage",
-    "kind": "page-export",
-    "startOffset": 95,
-    "endOffset": 218,
-    "startLine": 4,
-    "endLine": 6
+    "endLine": 9,
+    "hashSlices": [],
+    "references": []
   },
   {
     "id": "src/app/api/coupons/route.ts#POST",
@@ -37,6 +19,121 @@
     "startOffset": 0,
     "endOffset": 367,
     "startLine": 1,
-    "endLine": 9
+    "endLine": 9,
+    "references": []
+  },
+  {
+    "id": "src/app/checkout/page.tsx#<module>",
+    "file": "src/app/checkout/page.tsx",
+    "qualifiedName": "<module>",
+    "kind": "module",
+    "startOffset": 0,
+    "endOffset": 219,
+    "startLine": 1,
+    "endLine": 6,
+    "hashSlices": [
+      {
+        "startOffset": 0,
+        "endOffset": 42
+      },
+      {
+        "startOffset": 43,
+        "endOffset": 93
+      }
+    ],
+    "references": []
+  },
+  {
+    "id": "src/app/checkout/page.tsx#CheckoutPage",
+    "file": "src/app/checkout/page.tsx",
+    "qualifiedName": "CheckoutPage",
+    "kind": "page-export",
+    "startOffset": 95,
+    "endOffset": 218,
+    "startLine": 4,
+    "endLine": 6,
+    "references": [
+      "src/lib/format.ts#formatPrice"
+    ]
+  },
+  {
+    "id": "src/lib/cart.ts#<module>",
+    "file": "src/lib/cart.ts",
+    "qualifiedName": "<module>",
+    "kind": "module",
+    "startOffset": 0,
+    "endOffset": 359,
+    "startLine": 1,
+    "endLine": 18,
+    "hashSlices": [
+      {
+        "startOffset": 0,
+        "endOffset": 86
+      }
+    ],
+    "references": []
+  },
+  {
+    "id": "src/lib/cart.ts#Cart.addItem",
+    "file": "src/lib/cart.ts",
+    "qualifiedName": "Cart.addItem",
+    "kind": "method",
+    "startOffset": 146,
+    "endOffset": 356,
+    "startLine": 10,
+    "endLine": 17,
+    "references": [
+      "src/lib/cart.ts#<module>",
+      "src/lib/cart.ts#Cart.items"
+    ]
+  },
+  {
+    "id": "src/lib/cart.ts#Cart.items",
+    "file": "src/lib/cart.ts",
+    "qualifiedName": "Cart.items",
+    "kind": "value",
+    "startOffset": 110,
+    "endOffset": 142,
+    "startLine": 8,
+    "endLine": 8,
+    "references": [
+      "src/lib/cart.ts#<module>"
+    ]
+  },
+  {
+    "id": "src/lib/format.ts#<module>",
+    "file": "src/lib/format.ts",
+    "qualifiedName": "<module>",
+    "kind": "module",
+    "startOffset": 0,
+    "endOffset": 151,
+    "startLine": 1,
+    "endLine": 5,
+    "hashSlices": [],
+    "references": []
+  },
+  {
+    "id": "src/lib/format.ts#CENTS_PER_DOLLAR",
+    "file": "src/lib/format.ts",
+    "qualifiedName": "CENTS_PER_DOLLAR",
+    "kind": "value",
+    "startOffset": 13,
+    "endOffset": 35,
+    "startLine": 1,
+    "endLine": 1,
+    "references": []
+  },
+  {
+    "id": "src/lib/format.ts#formatPrice",
+    "file": "src/lib/format.ts",
+    "qualifiedName": "formatPrice",
+    "kind": "arrow-function",
+    "startOffset": 51,
+    "endOffset": 149,
+    "startLine": 3,
+    "endLine": 5,
+    "references": [
+      "src/lib/format.ts#CENTS_PER_DOLLAR"
+    ]
   }
 ]

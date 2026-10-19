@@ -112,6 +112,7 @@ export type ChangedFileKind =
   | "spec"
   | "test-support"
   | "app"
+  | "asset"
   | "unmapped";
 
 export interface ClassifyContext {
@@ -123,6 +124,8 @@ export interface ClassifyContext {
   specFiles: ReadonlySet<string>;
   /** POSIX project-relative lockfile path. */
   lockfileRel: string;
+  /** Files with an indexed asset symbol at base or head. */
+  assetFiles?: ReadonlySet<string>;
 }
 
 /**
@@ -142,6 +145,7 @@ export function classifyChangedFile(file: string, ctx: ClassifyContext): Changed
     return "test-support";
   }
   if (isDeclarationFile(file)) return "unmapped";
+  if (ctx.assetFiles?.has(file)) return "asset";
   if (isAppSourceFile(file)) {
     if (ctx.include.length > 0 && !matchesAnyFilePattern(ctx.include, file)) {
       return "unmapped";
@@ -159,18 +163,26 @@ function lineAt(lines: readonly string[], oneBased: number): string {
   return lines[oneBased - 1] ?? "";
 }
 
-function withinAnySymbol(symbols: readonly SymbolRecord[], line: number): boolean {
-  return symbols.some((s) => line >= s.startLine && line <= s.endLine);
-}
-
-function rangeIntersectsSymbol(
+/**
+ * The smallest symbol containing `line`. The whole-file `module`
+ * symbol is naturally the fallback (it is the largest), so any line
+ * inside a function or value attributes to that smaller symbol.
+ */
+function smallestSymbolForLine(
   symbols: readonly SymbolRecord[],
-  startLine: number,
-  endLine: number,
-): SymbolId[] {
-  return symbols
-    .filter((s) => s.startLine <= endLine && startLine <= s.endLine)
-    .map((s) => s.id);
+  line: number,
+): SymbolId | null {
+  let best: SymbolRecord | null = null;
+  let bestSpan = Number.POSITIVE_INFINITY;
+  for (const s of symbols) {
+    if (line < s.startLine || line > s.endLine) continue;
+    const span = s.endOffset - s.startOffset;
+    if (span < bestSpan) {
+      best = s;
+      bestSpan = span;
+    }
+  }
+  return best?.id ?? null;
 }
 
 export interface FileChangeInput {
@@ -209,7 +221,7 @@ export function computeChangedSymbolsForFile(input: FileChangeInput): FileChange
   if (input.status === "A" || input.status === "?") {
     // A brand-new file cannot execute unless changed code imports it, and
     // that change is mapped in the importing file. Its symbols still join
-    // the changed set so head-verified declarations can select on them.
+    // the changed set so head-recorded touched sets can select on them.
     return { changedSymbols: input.headSymbols.map((s) => s.id), unmappedLines: false };
   }
 
@@ -219,38 +231,20 @@ export function computeChangedSymbolsForFile(input: FileChangeInput): FileChange
   let unmappedLines = false;
 
   for (const hunk of input.hunks) {
-    // Only real removed/changed old lines intersect (a pure insertion
-    // touches no old line; its new lines are intersected on the head side,
-    // so a blank line added between symbols selects nothing).
-    if (hunk.oldCount > 0) {
-      for (const id of rangeIntersectsSymbol(
-        input.baseSymbols,
-        hunk.oldStart,
-        hunk.oldStart + hunk.oldCount - 1,
-      )) {
-        changed.add(id);
-      }
-    }
-    if (hunk.newCount > 0) {
-      for (const id of rangeIntersectsSymbol(
-        input.headSymbols,
-        hunk.newStart,
-        hunk.newStart + hunk.newCount - 1,
-      )) {
-        changed.add(id);
-      }
-    }
-    // A non-blank changed line outside every symbol (imports, top-level
-    // statements, constants) cannot be attributed to any test.
+    // Attribute each real changed line to its smallest containing
+    // symbol on the matching side (a pure insertion has no old lines;
+    // a blank line added between symbols attributes to nothing).
     for (let line = hunk.oldStart; line < hunk.oldStart + hunk.oldCount; line += 1) {
-      if (!withinAnySymbol(input.baseSymbols, line) && lineAt(baseLines, line).trim() !== "") {
-        unmappedLines = true;
-      }
+      if (lineAt(baseLines, line).trim() === "") continue;
+      const id = smallestSymbolForLine(input.baseSymbols, line);
+      if (id === null) unmappedLines = true;
+      else changed.add(id);
     }
     for (let line = hunk.newStart; line < hunk.newStart + hunk.newCount; line += 1) {
-      if (!withinAnySymbol(input.headSymbols, line) && lineAt(headLines, line).trim() !== "") {
-        unmappedLines = true;
-      }
+      if (lineAt(headLines, line).trim() === "") continue;
+      const id = smallestSymbolForLine(input.headSymbols, line);
+      if (id === null) unmappedLines = true;
+      else changed.add(id);
     }
   }
 

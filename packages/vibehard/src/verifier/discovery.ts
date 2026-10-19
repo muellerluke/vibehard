@@ -191,7 +191,7 @@ export async function discoverStaticTests(
     const prev = seen.get(t.testId);
     if (prev !== undefined) {
       throw new VibehardUsageError(
-        `vibehard: duplicate test "${t.title}" in ${t.relFile} (lines ${prev.line} and ${t.line}); rename one so declarations stay unambiguous`,
+        `vibehard: duplicate test "${t.title}" in ${t.relFile} (lines ${prev.line} and ${t.line}); rename one so test IDs stay unambiguous`,
       );
     }
     seen.set(t.testId, t);

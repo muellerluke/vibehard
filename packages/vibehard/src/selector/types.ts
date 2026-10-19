@@ -1,10 +1,11 @@
 import type { SymbolId } from "../index.js";
+import type { TouchKind, TouchedSet } from "../verifier/touched.js";
 
-/** Why one test was selected (manifest: `--dry-run` selection reasons). */
+/** Why one test was selected (`--dry-run` selection reasons). */
 export type SelectionReason =
-  | { type: "changed-symbol"; symbol: SymbolId }
-  | { type: "skip-verify"; reason: string }
-  | { type: "unverified" }
+  | { type: "changed-symbol"; symbol: SymbolId; via: TouchKind }
+  | { type: "always-run"; reason: string }
+  | { type: "unrecorded" }
   | { type: "test-file-changed"; file: string };
 
 export interface DiscoveredTestRef {
@@ -91,14 +92,12 @@ export interface ExplainTestEntry {
   file: string;
   titlePath: string[];
   inLockfile: boolean;
-  declared: SymbolId[];
-  allowedObserved: SymbolId[];
-  /** Declared ∪ allowedObserved: the set observed at last verify. */
-  lastObserved: SymbolId[];
-  skipVerify: string | null;
+  /** Recorded touched set (symbol ID -> touch kind). */
+  touched: TouchedSet;
+  alwaysRun: string | null;
   symbols: ExplainSymbolStatus[];
-  /** Symbol queries only: how this test relates to the queried symbol. */
-  via?: "declared" | "allowed";
+  /** Symbol queries only: how this test touched the queried symbol. */
+  via?: TouchKind;
 }
 
 export interface ExplainResult {

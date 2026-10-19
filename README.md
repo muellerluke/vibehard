@@ -1,9 +1,17 @@
 # vibehard
 
-Exact e2e test selection via declared, machine-verified symbol mapping.
-See [MANIFEST.md](MANIFEST.md) for the product spec and staged build plan.
+Exact e2e test selection via automatically recorded, machine-verified
+symbol mapping. See [MANIFEST.md](MANIFEST.md) for the product spec.
 
-Status: Stage 6 — Playwright, Puppeteer, and Cypress adapters.
+You never declare what a test touches. `vibehard record` runs each test
+under coverage and records every symbol it touched — functions it ran,
+top-level constants and module code those functions reference, and
+imported data files — with per-symbol source hashes in
+`vibehard.lock.json` (committed to git). `vibehard test` diffs your
+change against a base revision, maps changed lines to changed symbols,
+and runs exactly the tests whose recorded touched set intersects them.
+
+Status: Playwright, Puppeteer, and Cypress adapters.
 `init`, `record`, `verify`, `test`, and `explain` work for all three
 frameworks.
 
@@ -12,36 +20,38 @@ frameworks.
 ```ts
 import { test } from 'vibehard/playwright';
 
-test('checkout applies a coupon', {
-  uses: [
-    'src/app/checkout/page.tsx#CheckoutPage',
-    'src/lib/cart.ts#Cart.applyCoupon',
-  ],
-}, async ({ page }) => { /* existing test body, unchanged */ });
+test('checkout applies a coupon', async ({ page }) => {
+  /* existing test body, unchanged — nothing to declare */
+});
 ```
+
+The only per-test option is an escape hatch for genuinely unstable
+tests, audited in the lockfile and counted under `verify --ci`:
+`test('flaky live feed', { alwaysRun: 'live data' }, async …)`.
+Such tests are never recorded and always run under `vibehard test`.
 
 Get a `vibehard.config.json` from `vibehard init` (it detects Playwright,
 Next.js App/Pages Router, and a separate Express backend, and prints the
 remaining wiring steps). Then:
 
 ```bash
-vibehard record   # generate/repair declarations from real runs
-vibehard verify   # fail on any missing/extra symbol or lockfile drift
+vibehard record   # map touched symbols from real runs into the lockfile
+vibehard verify   # fail on any touched-set or lockfile drift
 vibehard test     # run only the tests affected by your change
 ```
 
 See `fixtures/tiny-app/` for a minimal fixture, and the Next.js examples
 below for full-stack setups.
 
-Once declarations verify, everyday runs select instead of verifying:
+Once the lockfile is recorded, everyday runs select instead of verifying:
 
 ```bash
 vibehard test                       # working tree vs baseBranch merge-base (or HEAD)
 vibehard test --base main           # compare against an explicit ref
 vibehard test --dry-run             # print the selected tests and why, run nothing
 vibehard test --all                 # skip selection, run the full suite
-vibehard explain 'src/lib/cart.ts#Cart.applyCoupon'  # which tests declare a symbol
-vibehard explain 'checkout'         # declared vs last observed set for a test
+vibehard explain 'src/lib/cart.ts#Cart.applyCoupon'  # which tests touched a symbol
+vibehard explain 'checkout'         # recorded touched set for a test
 ```
 
 Selection is exact or it does not happen: a config, package, or other
@@ -50,8 +60,10 @@ unmapped change, or a stale lockfile, runs the full suite (exit `3` under
 branch by default, and `ignore` globs for paths that may change freely.
 
 Running plain `playwright test` is unaffected; the adapter only observes
-when invoked through the vibehard CLI. Verification is Chromium-only in v1
-(Cypress client coverage comes from Istanbul instrumentation instead).
+when invoked through the vibehard CLI. Recording observes each test
+twice and refuses to record a test whose touched set is not
+reproducible. Verification is Chromium-only (Cypress client coverage
+comes from Istanbul instrumentation instead).
 
 ## Usage (Puppeteer)
 
@@ -63,9 +75,7 @@ Register tests with `describeTest` and open pages with
 import puppeteer from 'puppeteer';
 import { describeTest, withVibehardPage } from 'vibehard/puppeteer';
 
-describeTest('home page shows the cart total', {
-  uses: ['src/lib/cart.ts#Cart.addItem'],
-}, async () => {
+describeTest('home page shows the cart total', async () => {
   const browser = await puppeteer.launch();
   const page = await withVibehardPage(browser);
   await page.goto(process.env['VIBEHARD_BASE_URL'] ?? 'http://127.0.0.1:4174');
@@ -92,10 +102,8 @@ registerVibehardSupport();
 // cypress.config (setupNodeEvents)
 import { registerVibehardTasks } from 'vibehard/cypress/node';
 
-// a spec
-import { uses } from 'vibehard/cypress';
+// specs need no vibehard code; recording maps what each test touches
 it('home page shows the cart total', () => {
-  uses(['src/lib/cart.ts#Cart.addItem']);
   cy.visit('/');
 });
 ```
@@ -110,7 +118,7 @@ per-test title filter, so the run set matches `--dry-run`.
 
 ## Next.js and separate backends
 
-Working examples with verified declarations committed in `examples/`:
+Working examples with recorded lockfiles committed in `examples/`:
 
 - `examples/next-fullstack` — App Router with a server component, a client
   component, a route handler, a server action, plus one Pages Router page
@@ -138,17 +146,19 @@ Things that matter in a Next.js project:
   execute at build time, not while a test runs. Mark routes under test
   dynamic: `export const dynamic = 'force-dynamic'` (App Router) or
   `getServerSideProps` (Pages Router).
-- **Shared layout symbols are real declarations.** Every page test
-  observes its layouts; declare them once in a shared group (see
-  `e2e/uses.ts` in the examples) and spread it into tests.
+- **Shared layout symbols are recorded like everything else.** Every
+  page test's touched set includes its layouts automatically, so a
+  layout change selects every page test under it — no bookkeeping.
 - **Server actions count by their export name** in a top-level
   `'use server'` file. Actions inlined inside a component attribute to the
   enclosing component symbol.
 - **Bundler inlining is handled**: callees inlined into a caller are
   recovered from source-map segments executed inside the caller. Note a
   pure helper called only with literal arguments may instead be
-  constant-folded at build time; it then genuinely does not execute at
-  runtime, so it is correctly absent from observed sets.
+  constant-folded at build time; it then does not execute at runtime —
+  but if an executed function statically references it (or a folded
+  constant), it still enters the touched set as `referenced`, so
+  changing it still selects the test.
 - **No `instrumentation.ts` changes are needed.** Vibehard starts the
   server itself and never touches your `register()` export.
 - **Ports and hoisting**: in an npm-workspaces repo, `next` may be
@@ -159,9 +169,10 @@ Things that matter in a Next.js project:
 - **`app.external: true`** (Playwright `webServer` starts the app) is
   accepted by `vibehard test` selection, but `verify`/`record` reject it:
   per-test coverage windows need Vibehard to start a fresh app per test.
-- **Cost**: verification restarts every config server per test, so a
-  verify of N tests boots your app N times. That is the soundness
-  tradeoff in this version; `vibehard test` starts servers only once.
+- **Cost**: recording and verification restart every config server per
+  test (record observes each test twice), so a record of N tests boots
+  your app 2N times. That is the soundness tradeoff; `vibehard test`
+  starts servers only once.
 
 ## Development
 

@@ -2,6 +2,7 @@
   "pageLoad": {
     "client": [
       "src/lib/cart.ts#Cart.addItem",
+      "src/lib/cart.ts#Cart.items",
       "src/lib/format.ts#formatPrice"
     ],
     "server": [
@@ -11,6 +12,7 @@
     "merged": [
       "src/app/checkout/page.tsx#CheckoutPage",
       "src/lib/cart.ts#Cart.addItem",
+      "src/lib/cart.ts#Cart.items",
       "src/lib/format.ts#formatPrice"
     ]
   },
