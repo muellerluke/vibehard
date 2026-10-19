@@ -1,0 +1,13 @@
+{
+  "framework": "playwright",
+  "app": {
+    "command": "node",
+    "args": ["start-server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": { "PORT": "{port}" },
+    "readyTimeoutMs": 60000
+  },
+  "testDir": "e2e",
+  "playwright": { "project": "chromium" },
+  "ignore": ["next-env.d.ts"]
+}

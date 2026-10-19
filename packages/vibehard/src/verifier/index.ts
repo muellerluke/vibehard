@@ -6,7 +6,7 @@ export {
   resolveGeneratedPaths,
   stableStringify,
 } from "./config.js";
-export type { ResolvedConfig, VibehardAppConfig, VibehardConfig } from "./config.js";
+export type { ResolvedConfig, VibehardAppConfig, VibehardConfig, VibehardServerConfig } from "./config.js";
 export { diffDeclaredObserved } from "./diff.js";
 export type { DiffInput, DiffResult } from "./diff.js";
 export {
@@ -38,8 +38,9 @@ export {
   runSingleTest,
   spawnCapture,
   startAppServer,
+  startServers,
 } from "./playwright-runner.js";
-export type { AppServerSession, ListedTest, SpawnCaptureResult } from "./playwright-runner.js";
+export type { AppServerSession, ListedTest, ServersSession, SpawnCaptureResult } from "./playwright-runner.js";
 export { formatVerifyReport, recordProject, verifyProject } from "./run.js";
 export { VibehardUsageError } from "./types.js";
 export type {

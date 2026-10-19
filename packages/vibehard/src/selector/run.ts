@@ -10,11 +10,10 @@ import {
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
 import {
-  freePort,
   listTests,
   resolvePlaywrightCli,
   runPlaywrightTests,
-  startAppServer,
+  startServers,
   type ListedTest,
   type SpawnCaptureResult,
 } from "../verifier/playwright-runner.js";
@@ -31,25 +30,24 @@ import type {
   TestProjectResult,
 } from "./types.js";
 
-/** Run Playwright around the config app server, without observation. */
+/** Run Playwright around the config servers, without observation. */
 async function runPlain(
   rootDir: string,
   resolved: ResolvedConfig,
   cliPath: string,
   positionals: readonly string[],
 ): Promise<SpawnCaptureResult> {
-  const port = resolved.config.app !== undefined ? await freePort() : 0;
-  const server = await startAppServer(resolved, port);
+  const servers = await startServers(resolved);
   try {
     return await runPlaywrightTests({
       rootDir,
       cliPath,
       resolved,
       positionals,
-      env: server !== null ? { VIBEHARD_BASE_URL: server.baseUrl } : {},
+      env: servers.env,
     });
   } finally {
-    if (server !== null) await server.stop().catch(() => []);
+    await servers.stop().catch(() => []);
   }
 }
 

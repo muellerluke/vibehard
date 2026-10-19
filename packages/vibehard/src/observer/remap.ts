@@ -1,7 +1,12 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 
-import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
+import {
+  eachMapping,
+  FlattenMap,
+  originalPositionFor,
+  TraceMap,
+} from "@jridgewell/trace-mapping";
 
 import type {
   ObservedRange,
@@ -21,6 +26,8 @@ interface RawSourceMap {
   sourceRoot?: string;
   sources?: string[];
   sourcesContent?: (string | null)[];
+  /** Sectioned (index) maps, e.g. Turbopack's `[turbopack]_runtime.js.map`. */
+  sections?: unknown[];
 }
 
 /** Scripts that never count and never fail closed (manifest exclusions). */
@@ -115,7 +122,21 @@ function remapRanges(
   executed: ReturnType<typeof executedFunctionRanges>,
   diagnostics: string[],
 ): RemapResult {
-  const tracer = new TraceMap(rawMap as never);
+  // Sectioned index maps must be flattened first; the flattened tracer
+  // exposes aligned `sources`/`sourcesContent`, used below in place of
+  // the raw (possibly sections-only) map.
+  const tracer: TraceMap =
+    rawMap.sections !== undefined
+      ? new FlattenMap(rawMap as never)
+      : new TraceMap(rawMap as never);
+  const flatMap: RawSourceMap = {
+    ...(rawMap.sourceRoot !== undefined ? { sourceRoot: rawMap.sourceRoot } : {}),
+    sources: (tracer as { sources?: string[] }).sources ?? rawMap.sources ?? [],
+    sourcesContent:
+      (tracer as { sourcesContent?: (string | null)[] }).sourcesContent ??
+      rawMap.sourcesContent ??
+      [],
+  };
   const generatedLines = new LineTable(generated);
   const originals = new Map<string, LineTable | null>();
   const ranges: ObservedRange[] = [];
@@ -126,10 +147,13 @@ function remapRanges(
   // back under the root. Fall back to matching indexed files by suffix.
   const knownFiles = [...new Set(options.symbols.map((s) => s.file))];
   const relForSource = (source: string): string | null => {
-    const abs = resolveOriginalPath(source, rawMap, sourcePath, options.rootDir);
+    const clean = cleanSourcePath(source);
+    // Turbopack runtime internals (`turbopack:///[turbopack]/…`) are
+    // framework code with no app source file: built-in exclusion.
+    if (clean.startsWith("[turbopack]/")) return null;
+    const abs = resolveOriginalPath(source, flatMap, sourcePath, options.rootDir);
     const rel = relativePosix(options.rootDir, abs);
     if (rel !== null && !rel.split("/").includes("node_modules")) return rel;
-    const clean = cleanSourcePath(source);
     for (const file of knownFiles) {
       if (clean === file || clean.endsWith(`/${file}`)) return file;
     }
@@ -141,11 +165,11 @@ function remapRanges(
     if (rel === null) return "excluded";
     let table = originals.get(rel);
     if (table === undefined) {
-      const abs = resolveOriginalPath(source, rawMap, sourcePath, options.rootDir);
+      const abs = resolveOriginalPath(source, flatMap, sourcePath, options.rootDir);
       const text =
         readIfExists(abs) ??
         readIfExists(path.join(options.rootDir, rel)) ??
-        sourcesContentFor(rawMap, source);
+        sourcesContentFor(flatMap, source);
       table = text === null ? null : new LineTable(text);
       originals.set(rel, table);
     }
@@ -175,10 +199,17 @@ function remapRanges(
     const startOffset = table.offsetFor(start.line, start.column);
     const endNeedle = generatedLines.positionFor(Math.max(range.startOffset, range.endOffset - 1));
     const end = originalPositionFor(tracer, endNeedle);
-    let endOffset = startOffset + 1;
-    if (end.source === start.source && end.line !== null && end.column !== null) {
-      endOffset = Math.max(startOffset + 1, table.offsetFor(end.line, end.column) + 1);
+    if (end.source !== start.source || end.line === null || end.column === null) {
+      // Start and end map to different originals: this generated
+      // function spans module boundaries (a bundler module factory), or
+      // its start merely inherits the previous module's last segment.
+      // Attributing it to the start segment's symbol would be a guess;
+      // real symbols inside it are recovered by segment sampling below
+      // and by their own V8 function entries.
+      glue += 1;
+      continue;
     }
+    const endOffset = Math.max(startOffset + 1, table.offsetFor(end.line, end.column) + 1);
     const rel = relForSource(start.source);
     if (rel === null) continue;
     ranges.push({ file: rel, startOffset, endOffset, origin: script.origin });
@@ -186,7 +217,86 @@ function remapRanges(
   if (glue > 0) {
     diagnostics.push(`ignored ${glue} unmapped generated range(s) in ${script.url}`);
   }
+
+  // Bundlers (Turbopack especially) inline small callees into their
+  // callers, so an executed function's outer range no longer starts in
+  // the callee's file. Recover those symbols by sampling every mapping
+  // segment that lies inside an executed block range: a generated offset
+  // counts as executed when it is inside some executed function's outer
+  // range and outside every count-0 block / unexecuted function range.
+  // Sampling is restricted to indexed files — the only files with
+  // symbols — which bounds the work on framework-heavy chunks.
+  const knownFileSet = new Set(knownFiles);
+  const appSources = (flatMap.sources ?? []).filter((source) => {
+    const rel = relForSource(source);
+    return rel !== null && knownFileSet.has(rel);
+  });
+  if (appSources.length > 0) {
+    const isExecuted = makeExecutedPredicate(script);
+    const seenPoints = new Set<string>();
+    try {
+      eachMapping(tracer, (mapping) => {
+        if (
+          mapping.source === null ||
+          mapping.originalLine === null ||
+          mapping.originalColumn === null
+        ) {
+          return;
+        }
+        const generatedOffset = generatedLines.offsetFor(
+          mapping.generatedLine,
+          mapping.generatedColumn,
+        );
+        if (!isExecuted(generatedOffset)) return;
+        const rel = relForSource(mapping.source);
+        if (rel === null || !knownFileSet.has(rel)) return;
+        const table = originalTable(mapping.source);
+        if (table === "excluded" || table === null) return;
+        const startOffset = table.offsetFor(mapping.originalLine, mapping.originalColumn);
+        const key = `${rel}:${startOffset}`;
+        if (seenPoints.has(key)) return;
+        seenPoints.add(key);
+        ranges.push({ file: rel, startOffset, endOffset: startOffset + 1, origin: script.origin });
+      });
+    } catch {
+      diagnostics.push(`segment sampling failed for ${script.url}; outer ranges only`);
+    }
+  }
   return { ranges, unmappable: null, diagnostics };
+}
+
+/**
+ * Offset-executed predicate from raw V8 block coverage: inside an
+ * executed function's outer range, outside all count-0 ranges. The
+ * synthetic whole-script function proves import, not execution, and is
+ * dropped the same way as in `executedFunctionRanges`.
+ */
+function makeExecutedPredicate(script: ScriptInput): (offset: number) => boolean {
+  let scriptRange: { startOffset: number; endOffset: number } | null = null;
+  for (const fn of script.functions) {
+    const range = fn.ranges[0];
+    if (range === undefined || fn.functionName !== "" || range.startOffset !== 0) continue;
+    if (scriptRange === null || range.endOffset > scriptRange.endOffset) scriptRange = range;
+  }
+  const positives: { startOffset: number; endOffset: number }[] = [];
+  const zeros: { startOffset: number; endOffset: number }[] = [];
+  for (const fn of script.functions) {
+    const outer = fn.ranges[0];
+    if (outer === undefined || outer === scriptRange) continue;
+    if (outer.count > 0) {
+      positives.push(outer);
+      for (const block of fn.ranges.slice(1)) {
+        if (block.count === 0) zeros.push(block);
+      }
+    } else {
+      zeros.push(outer);
+    }
+  }
+  const inAny = (
+    list: readonly { startOffset: number; endOffset: number }[],
+    offset: number,
+  ): boolean => list.some((r) => offset >= r.startOffset && offset < r.endOffset);
+  return (offset) => inAny(positives, offset) && !inAny(zeros, offset);
 }
 
 function resolveSourceMap(
@@ -214,9 +324,18 @@ function resolveSourceMap(
   if (sourcePath !== null) {
     const tail = generated.slice(Math.max(0, generated.lastIndexOf("sourceMappingURL=")));
     const ref = /sourceMappingURL=([^\s]+)/.exec(tail)?.[1];
+    // Turbopack percent-encodes brackets in the ref (`%5Bturbopack%5D…`).
+    let decodedRef = ref;
+    if (ref !== undefined) {
+      try {
+        decodedRef = decodeURIComponent(ref);
+      } catch {
+        decodedRef = ref;
+      }
+    }
     const candidates = [
-      ...(ref !== undefined && !ref.startsWith("data:")
-        ? [path.resolve(path.dirname(sourcePath), ref)]
+      ...(decodedRef !== undefined && !decodedRef.startsWith("data:")
+        ? [path.resolve(path.dirname(sourcePath), decodedRef)]
         : []),
       `${sourcePath}.map`,
     ];
@@ -236,7 +355,11 @@ function parseMap(value: unknown): RawSourceMap | null {
       return null;
     }
   }
-  if (typeof value === "object" && value !== null && "mappings" in value) {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    ("mappings" in value || "sections" in value)
+  ) {
     return value as RawSourceMap;
   }
   return null;
@@ -252,13 +375,24 @@ function samePath(a: string, b: string): boolean {
   }
 }
 
+/** Strip scheme and query decoration from a source-map `sources` entry. */
+function stripSourceScheme(source: string): string {
+  return (
+    source
+      .replace(/^file:\/\//, "")
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+      .split(/[?#]/)[0] ?? source
+  );
+}
+
 /** POSIX-normalized source path without scheme or query decoration. */
 function cleanSourcePath(source: string): string {
-  const clean = source
-    .replace(/^file:\/\//, "")
-    .replace(/^[a-z]+:\/\/\//i, "")
-    .split(/[?#]/)[0] ?? source;
-  return clean.split(path.sep).join("/").replace(/^\//, "");
+  const clean = stripSourceScheme(source)
+    .split(path.sep)
+    .join("/")
+    .replace(/^\//, "");
+  // Turbopack names project files `turbopack:///[project]/<root-relative>`.
+  return clean.startsWith("[project]/") ? clean.slice("[project]/".length) : clean;
 }
 
 function resolveOriginalPath(
@@ -267,10 +401,10 @@ function resolveOriginalPath(
   sourcePath: string | null,
   rootDir: string,
 ): string {
-  const clean = source
-    .replace(/^file:\/\//, "")
-    .replace(/^[a-z]+:\/\/\//i, "")
-    .split(/[?#]/)[0] ?? source;
+  const clean = stripSourceScheme(source);
+  if (clean.startsWith("/[project]/")) {
+    return path.resolve(rootDir, clean.slice("/[project]/".length));
+  }
   if (path.isAbsolute(clean)) return path.normalize(clean);
   const base = sourcePath !== null ? path.dirname(sourcePath) : rootDir;
   const fromGenerated = path.resolve(base, rawMap.sourceRoot ?? "", clean);

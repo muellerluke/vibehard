@@ -1,9 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
+import { spawnCapture } from "../src/index.js";
 import { COMMANDS, runCli } from "../src/cli/index.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(here, "../../..");
 
 const tempDirs: string[] = [];
 afterAll(() => {
@@ -21,12 +26,13 @@ describe("AT-01: CLI", () => {
     expect((await runCli(["--version"])).exitCode).toBe(0);
   });
 
-  it("unimplemented commands exit 3 with their stage", async () => {
-    for (const c of ["init"] as const) {
-      const r = await runCli([c]);
-      expect(r.exitCode).toBe(3);
-      expect(r.stderr).toContain("not implemented");
-    }
+  it("init is a real command (detection error, not a stub)", async () => {
+    const empty = mkdtempSync(path.join(tmpdir(), "vibehard-cli-"));
+    tempDirs.push(empty);
+    const r = await runCli(["init"], { cwd: empty });
+    expect(r.exitCode).toBe(3);
+    expect(r.stderr).toContain("no package.json");
+    expect(r.stderr).not.toContain("not implemented");
   });
 
   it("record/verify are real commands (config error, not a stub)", async () => {
@@ -77,6 +83,24 @@ describe("AT-01: CLI", () => {
     expect(r.exitCode).toBe(3);
     expect(r.stderr).toContain("unknown option");
   });
+
+  it("the built bin runs through a .bin-style symlink (npx shape)", async () => {
+    const build = await spawnCapture("npm", ["run", "build", "-w", "vibehard"], {
+      cwd: REPO_ROOT,
+      timeoutMs: 180_000,
+    });
+    expect(build.exitCode, build.stderr).toBe(0);
+    const dir = mkdtempSync(path.join(tmpdir(), "vibehard-bin-"));
+    tempDirs.push(dir);
+    const link = path.join(dir, "vibehard");
+    symlinkSync(path.join(REPO_ROOT, "packages/vibehard/dist/cli.js"), link);
+    const r = await spawnCapture(process.execPath, [link, "--help"], {
+      cwd: dir,
+      timeoutMs: 60_000,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Usage: vibehard");
+  }, 240_000);
 
   it("--json produces parseable output", async () => {
     const r = await runCli(["--version", "--json"]);

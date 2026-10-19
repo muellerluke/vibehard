@@ -13,14 +13,31 @@ export interface VibehardAppConfig {
   url: string;
   cwd?: string;
   env?: Record<string, string>;
-  /** Stage 3 cannot attribute per-test server coverage to external apps. */
+  /**
+   * The framework config starts the app itself (e.g. Playwright
+   * `webServer`); Vibehard starts nothing for it. Per-test server
+   * coverage cannot be attributed to an external app, so `external` is
+   * accepted by `vibehard test` only — verify/record reject it.
+   */
   external?: boolean;
   readyTimeoutMs?: number;
+}
+
+/** One extra labeled Node process (separate-backend app shape). */
+export interface VibehardServerConfig extends VibehardAppConfig {
+  /**
+   * Label used in `{port:<name>}` substitutions, per-server
+   * `VIBEHARD_<NAME>_URL` env, and diagnostics. `app` is reserved for
+   * the `app` entry itself.
+   */
+  name: string;
 }
 
 export interface VibehardConfig {
   framework: "playwright" | "puppeteer" | "cypress";
   app?: VibehardAppConfig;
+  /** Extra labeled servers started (in order) before `app`. */
+  servers?: VibehardServerConfig[];
   include?: string[];
   ignore?: string[];
   testDir?: string;
@@ -127,18 +144,52 @@ function validateConfig(config: VibehardConfig, configPath: string | null): void
       `vibehard: framework "${config.framework}" in ${where} is not supported until Stage 6 (Stage 3 is Playwright-only)`,
     );
   }
-  if (config.app !== undefined) {
-    if (typeof config.app.command !== "string" || config.app.command === "") {
-      throw new VibehardUsageError(`vibehard: app.command in ${where} must be a non-empty string`);
+  if (config.app !== undefined) validateServerFields(config.app, "app", where);
+  if (config.servers !== undefined) {
+    if (!Array.isArray(config.servers)) {
+      throw new VibehardUsageError(`vibehard: servers in ${where} must be an array`);
     }
-    if (typeof config.app.url !== "string" || config.app.url === "") {
-      throw new VibehardUsageError(`vibehard: app.url in ${where} must be a non-empty string`);
+    const names = new Set<string>();
+    for (const server of config.servers) {
+      if (
+        typeof server.name !== "string" ||
+        !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(server.name)
+      ) {
+        throw new VibehardUsageError(
+          `vibehard: servers[].name in ${where} must match /^[a-zA-Z][a-zA-Z0-9_-]*$/`,
+        );
+      }
+      if (server.name === "app") {
+        throw new VibehardUsageError(
+          `vibehard: servers[].name "app" in ${where} is reserved for the app entry`,
+        );
+      }
+      if (names.has(server.name)) {
+        throw new VibehardUsageError(
+          `vibehard: duplicate servers[].name "${server.name}" in ${where}`,
+        );
+      }
+      names.add(server.name);
+      if (server.external === true) {
+        throw new VibehardUsageError(
+          `vibehard: servers[name=${server.name}].external in ${where} is not supported; extra servers are always started by Vibehard`,
+        );
+      }
+      validateServerFields(server, `servers[name=${server.name}]`, where);
     }
-    if (config.app.external === true) {
-      throw new VibehardUsageError(
-        "vibehard: app.external cannot be verified in Stage 3 (per-test server coverage needs Vibehard to start the app); remove external or wait for Stage 5",
-      );
-    }
+  }
+}
+
+function validateServerFields(
+  server: VibehardAppConfig,
+  label: string,
+  where: string,
+): void {
+  if (typeof server.command !== "string" || server.command === "") {
+    throw new VibehardUsageError(`vibehard: ${label}.command in ${where} must be a non-empty string`);
+  }
+  if (typeof server.url !== "string" || server.url === "") {
+    throw new VibehardUsageError(`vibehard: ${label}.url in ${where} must be a non-empty string`);
   }
 }
 

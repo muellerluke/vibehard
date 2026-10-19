@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
+
+import { formatInitReport, initProject } from "../init/index.js";
 import {
   explainProject,
   formatExplainReport,
@@ -18,9 +21,7 @@ const VERSION = "0.0.0";
 export const COMMANDS = ["init", "record", "verify", "test", "explain"] as const;
 export type Command = (typeof COMMANDS)[number];
 
-const STUB_STAGE: Partial<Record<Command, string>> = {
-  init: "Stage 5",
-};
+const STUB_STAGE: Partial<Record<Command, string>> = {};
 
 const HELP = `vibehard — exact e2e test selection
 
@@ -38,7 +39,8 @@ Options:
   --version    Print version
   --json       Machine-readable output (every command)
   --ci         verify: check the lockfile without writing; enforce skipVerify budget
-  --config     Path to vibehard.config (record/verify/test/explain)
+  --config     Path to vibehard.config (record/verify/test/explain;
+               for init, the output path to write)
   --base <ref> test: compare the working tree against this ref (default:
                merge-base with the configured baseBranch, else HEAD)
   --all        test: skip selection and run the full suite
@@ -114,6 +116,30 @@ export async function runCli(
     return json
       ? { exitCode: 0, stdout: JSON.stringify({ ok: true, version: VERSION }), stderr: "" }
       : { exitCode: 0, stdout: `${VERSION}\n`, stderr: "" };
+  }
+
+  if (cmd === "init") {
+    if (rest.some((a) => a.startsWith("-"))) {
+      return fail(3, `vibehard init: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
+    }
+    if (rest.length > 0) {
+      return fail(3, `vibehard init: unexpected argument ${rest[0]}`, cmd);
+    }
+    try {
+      const result = initProject({
+        rootDir: options.cwd ?? process.cwd(),
+        ...(configPath !== undefined ? { outputPath: configPath } : {}),
+      });
+      return {
+        exitCode: 0,
+        stdout: json ? JSON.stringify({ ...result, command: cmd }) : formatInitReport(result),
+        stderr: "",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error instanceof VibehardUsageError ? error.exitCode : 3;
+      return fail(code, message.startsWith("vibehard:") ? message : `vibehard init: ${message}`, cmd);
+    }
   }
 
   if (cmd === "record" || cmd === "verify") {
@@ -208,7 +234,19 @@ export async function runCli(
   return fail(3, `vibehard: unknown command '${cmd}'${json ? "" : `\n\n${HELP}`}`);
 }
 
-const isMain = process.argv[1]?.endsWith("cli.js") || process.argv[1]?.endsWith("cli.cjs");
+// The installed `vibehard` bin is a symlink (node_modules/.bin/vibehard),
+// so argv[1] is the symlink path, not cli.js: resolve it before checking.
+const isMain = ((): boolean => {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  const candidates = [entry];
+  try {
+    candidates.push(realpathSync(entry));
+  } catch {
+    // entry missing: fall through with the literal path only
+  }
+  return candidates.some((p) => p.endsWith("cli.js") || p.endsWith("cli.cjs"));
+})();
 if (isMain) {
   void (async () => {
     const r = await runCli(process.argv.slice(2));

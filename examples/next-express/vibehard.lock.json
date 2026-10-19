@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "framework": {
+    "name": "playwright",
+    "version": "1.59.0"
+  },
+  "configHash": "aa3fb3614df5e09dd81bd0694cd1aed019f4289bb5ff4b9eb912c421e177d639",
+  "tests": {
+    "e2e/app.spec.ts::order api prices an order": {
+      "file": "e2e/app.spec.ts",
+      "titlePath": [
+        "order api prices an order"
+      ],
+      "declared": [
+        "api/src/catalog.ts#findProduct",
+        "api/src/catalog.ts#priceOrder",
+        "api/src/routes.ts#createOrder"
+      ],
+      "symbolHashes": {
+        "api/src/catalog.ts#findProduct": "2bc904bbedfe316521eb6bd9a7e80bc42186bf095f267202598e2d7040db89da",
+        "api/src/catalog.ts#priceOrder": "c57eb59a6a563cc92047ab239a4b16b0125a3304706b09a1e931f2ac786b6f8d",
+        "api/src/routes.ts#createOrder": "43886e0eddc9e8b1a13bacc6a47221fef9c244df5f797c510ca51217037ab84f"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    },
+    "e2e/app.spec.ts::product page shows the api price": {
+      "file": "e2e/app.spec.ts",
+      "titlePath": [
+        "product page shows the api price"
+      ],
+      "declared": [
+        "api/src/catalog.ts#findProduct",
+        "api/src/routes.ts#getProduct",
+        "src/app/layout.tsx#RootLayout",
+        "src/app/page.tsx#ProductPage",
+        "src/lib/pricing.ts#formatPrice",
+        "src/lib/products.ts#getProduct"
+      ],
+      "symbolHashes": {
+        "api/src/catalog.ts#findProduct": "2bc904bbedfe316521eb6bd9a7e80bc42186bf095f267202598e2d7040db89da",
+        "api/src/routes.ts#getProduct": "5cd4622fe804c6451ab7323bfb5b99f503246aebf6cb5954a2bc7d3dccad60eb",
+        "src/app/layout.tsx#RootLayout": "ed38d8f8cc77fa3c9f0db08c1721ebac2216a69388d0ede4bcee14a088a93927",
+        "src/app/page.tsx#ProductPage": "13100a8161a71fa3339c40ed344edb562da98b2cc36795d5af85e76333a8abc5",
+        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298",
+        "src/lib/products.ts#getProduct": "33a297838d91989701225bb73ff294147c9c2723142ead30b33ad039b175e492"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    }
+  }
+}

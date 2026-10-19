@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { addMapping, GenMapping, toEncodedMap } from "@jridgewell/gen-mapping";
 import { build } from "esbuild";
 import { chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -228,6 +229,94 @@ describe("range→symbol mapping", () => {
     expect(result.merged).toEqual([]);
   });
 
+  it("Stage 5: recovers inlined callees from Turbopack-style [project] maps", () => {
+    const format = index.symbols.find(
+      (s) => s.id === "src/lib/format.ts#formatPrice",
+    );
+    const checkout = index.symbols.find(
+      (s) => s.id === "src/app/checkout/page.tsx#CheckoutPage",
+    );
+    expect(format).toBeDefined();
+    expect(checkout).toBeDefined();
+    if (format === undefined || checkout === undefined) return;
+    // One generated function whose body inlines formatPrice's body: the
+    // outer V8 range starts at CheckoutPage's segment, so only segment
+    // sampling inside the executed block can attribute formatPrice.
+    const generated =
+      'function caller(cents){return "$"+(cents/100).toFixed(2);}caller(1299);\n';
+    const inlinedAt = generated.indexOf("(cents/100)");
+    const makeMap = () => {
+      const map = new GenMapping({ file: "chunk.js" });
+      addMapping(map, {
+        generated: { line: 1, column: 0 },
+        source: "turbopack:///[project]/src/app/checkout/page.tsx",
+        original: { line: checkout.startLine, column: 0 },
+      });
+      addMapping(map, {
+        generated: { line: 1, column: inlinedAt },
+        source: "turbopack:///[project]/src/lib/format.ts",
+        original: { line: format.startLine + 1, column: 2 },
+      });
+      return toEncodedMap(map);
+    };
+    const scriptWith = (callerRanges: ScriptInput["functions"][number]["ranges"]): ScriptInput => ({
+      url: "http://127.0.0.1/_next/static/chunks/chunk.js",
+      origin: "client",
+      source: generated,
+      sourceMap: makeMap(),
+      functions: [
+        {
+          functionName: "",
+          ranges: [{ startOffset: 0, endOffset: generated.length, count: 1 }],
+        },
+        { functionName: "caller", ranges: callerRanges },
+      ],
+    });
+    const callerEnd = generated.indexOf(";}caller") + 1;
+
+    const executed = observeScripts(
+      [scriptWith([{ startOffset: 0, endOffset: callerEnd, count: 1 }])],
+      { rootDir: TINY_APP, symbols: index.symbols },
+    );
+    expect(executed.ok).toBe(true);
+    expect(executed.merged).toEqual([
+      "src/app/checkout/page.tsx#CheckoutPage",
+      "src/lib/format.ts#formatPrice",
+    ]);
+
+    // The same map as a sectioned index map (Turbopack runtime shape)
+    // must flatten to identical results instead of failing closed.
+    const sectioned = observeScripts(
+      [
+        {
+          ...scriptWith([{ startOffset: 0, endOffset: callerEnd, count: 1 }]),
+          sourceMap: {
+            version: 3,
+            sections: [{ offset: { line: 0, column: 0 }, map: makeMap() }],
+          },
+        },
+      ],
+      { rootDir: TINY_APP, symbols: index.symbols },
+    );
+    expect(sectioned.ok).toBe(true);
+    expect(sectioned.merged).toEqual([
+      "src/app/checkout/page.tsx#CheckoutPage",
+      "src/lib/format.ts#formatPrice",
+    ]);
+
+    // The same inlined expression under a count-0 block did not execute.
+    const notExecuted = observeScripts(
+      [
+        scriptWith([
+          { startOffset: 0, endOffset: callerEnd, count: 1 },
+          { startOffset: inlinedAt, endOffset: inlinedAt + 12, count: 0 },
+        ]),
+      ],
+      { rootDir: TINY_APP, symbols: index.symbols },
+    );
+    expect(notExecuted.merged).toEqual(["src/app/checkout/page.tsx#CheckoutPage"]);
+  });
+
   it("excludes runtime internals without failing", () => {
     const result = observeScripts(
       [
@@ -322,6 +411,56 @@ describe("Node child coverage (server path, no browser)", () => {
       "src/lib/format.ts#formatPrice",
     ]);
     expect(result.client).toEqual([]);
+  }, TIMEOUT);
+
+  it("Stage 5: merges coverage from a grandchild Node process", async () => {
+    // A covered parent spawns its own Node child; NODE_V8_COVERAGE
+    // propagates through the environment, so both processes' coverage
+    // files land in one directory and merge (Next.js worker shape).
+    const dir = makeTempDir();
+    const childEntry = path.join(dir, "child-entry.ts");
+    const parentEntry = path.join(dir, "parent-entry.ts");
+    writeFileSync(
+      childEntry,
+      `import { Cart } from ${JSON.stringify(path.join(TINY_APP, "src/lib/cart.ts"))};\n` +
+        'const cart = new Cart();\ncart.addItem({ sku: "pen", priceCents: 100, quantity: 1 });\n',
+    );
+    writeFileSync(
+      parentEntry,
+      'import { spawnSync } from "node:child_process";\n' +
+        `import { formatPrice } from ${JSON.stringify(path.join(TINY_APP, "src/lib/format.ts"))};\n` +
+        "process.stdout.write(formatPrice(250));\n" +
+        'const bundle = process.env["VH_CHILD_BUNDLE"] ?? "";\n' +
+        'const r = spawnSync(process.execPath, [bundle], { stdio: "inherit" });\n' +
+        "if (r.status !== 0) process.exit(1);\n",
+    );
+    const childBundle = path.join(dir, "child.mjs");
+    const parentBundle = path.join(dir, "parent.mjs");
+    const shared = {
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      sourcemap: true,
+      logLevel: "silent",
+    } as const;
+    await build({ ...shared, entryPoints: [childEntry], outfile: childBundle });
+    await build({ ...shared, entryPoints: [parentEntry], outfile: parentBundle });
+    const index = await indexProject(TINY_APP);
+    const scripts = await runNodeWithCoverage({
+      command: process.execPath,
+      args: [parentBundle],
+      env: { VH_CHILD_BUNDLE: childBundle },
+    });
+    const result = observeScripts(scripts, {
+      rootDir: TINY_APP,
+      symbols: index.symbols,
+      appGeneratedPaths: [parentBundle, childBundle],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.server).toEqual([
+      "src/lib/cart.ts#Cart.addItem",
+      "src/lib/format.ts#formatPrice",
+    ]);
   }, TIMEOUT);
 
   it("maps sources rewritten to non-existent absolute paths by suffix", async () => {

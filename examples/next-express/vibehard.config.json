@@ -1,0 +1,26 @@
+{
+  "framework": "playwright",
+  "app": {
+    "command": "node",
+    "args": ["start-server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": {
+      "PORT": "{port}",
+      "API_URL": "http://127.0.0.1:{port:api}"
+    },
+    "readyTimeoutMs": 60000
+  },
+  "servers": [
+    {
+      "name": "api",
+      "command": "node",
+      "args": [".build/api.cjs"],
+      "url": "http://127.0.0.1:{port}",
+      "env": { "API_PORT": "{port}" },
+      "readyTimeoutMs": 30000
+    }
+  ],
+  "testDir": "e2e",
+  "playwright": { "project": "chromium" },
+  "ignore": ["next-env.d.ts"]
+}

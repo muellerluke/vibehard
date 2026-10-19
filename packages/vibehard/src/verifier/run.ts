@@ -19,12 +19,11 @@ import {
   type VibehardLockfile,
 } from "./lockfile.js";
 import {
-  freePort,
   listTests,
   readArtifacts,
   resolvePlaywrightCli,
   runSingleTest,
-  startAppServer,
+  startServers,
   type ListedTest,
 } from "./playwright-runner.js";
 import {
@@ -81,6 +80,11 @@ async function runProject(
 ): Promise<ProjectVerifyResult> {
   const rootDir = path.resolve(options.rootDir);
   const resolved: ResolvedConfig = await loadConfig(rootDir, options.configPath);
+  if (resolved.config.app?.external === true) {
+    throw new VibehardUsageError(
+      "vibehard: app.external cannot be verified or recorded (per-test server coverage needs Vibehard to start the app); remove external for verify/record — `vibehard test` accepts it",
+    );
+  }
   const ci = mode === "verify" && (options.ci ?? false);
 
   const index = await indexProject(rootDir);
@@ -117,7 +121,9 @@ async function runProject(
   const results: TestVerifyResult[] = [];
   const entries = new Map<string, LockfileTestEntry>();
   try {
-    for (const test of selected) {
+    for (let i = 0; i < selected.length; i += 1) {
+      const test = selected[i];
+      if (test === undefined) continue;
       const result = await runOneTest({
         mode,
         rootDir,
@@ -132,6 +138,18 @@ async function runProject(
       });
       results.push(result.result);
       if (result.entry !== null) entries.set(test.testId, result.entry);
+      // A record rewrite inserts lines above later tests in the same
+      // file, invalidating their listed `file:line` positions. Re-list
+      // so remaining tests run at fresh positions.
+      if (mode === "record" && result.result.changed === true && i + 1 < selected.length) {
+        const fresh = await listTests(rootDir, resolved, cliPath);
+        const byId = new Map(fresh.map((t) => [t.testId, t]));
+        for (let j = i + 1; j < selected.length; j += 1) {
+          const stale = selected[j];
+          const current = stale !== undefined ? byId.get(stale.testId) : undefined;
+          if (stale !== undefined && current !== undefined) selected[j] = current;
+        }
+      }
     }
   } finally {
     rmSync(runTemp, { recursive: true, force: true });
@@ -256,8 +274,7 @@ async function runOneTest(
     skipVerify: null,
   };
   try {
-    const port = resolved.config.app !== undefined ? await freePort() : 0;
-    const server = await startAppServer(resolved, port);
+    const servers = await startServers(resolved);
     let run: Awaited<ReturnType<typeof runSingleTest>>;
     let serverScripts: ScriptInput[] = [];
     try {
@@ -269,11 +286,11 @@ async function runOneTest(
         env: {
           VIBEHARD_ARTIFACT_DIR: artifactDir,
           VIBEHARD_RESOLVE_MAP: input.resolveMapFile,
-          ...(server !== null ? { VIBEHARD_BASE_URL: server.baseUrl } : {}),
+          ...servers.env,
         },
       });
     } finally {
-      if (server !== null) serverScripts = await server.stop().catch(() => []);
+      serverScripts = await servers.stop().catch(() => []);
     }
 
     const artifacts = readArtifacts(artifactDir);

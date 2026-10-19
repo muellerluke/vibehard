@@ -251,45 +251,83 @@ export interface AppServerSession {
   stop: () => Promise<ScriptInput[]>;
 }
 
-function substitutePort(value: string, port: number): string {
-  return value.split("{port}").join(String(port));
+/** All config servers (`servers` in order, then `app`) under coverage. */
+export interface ServersSession {
+  /** Substituted `app.url` (also for an `external` app), or null without app. */
+  baseUrl: string | null;
+  /** Substituted URL per server label: `app` plus each `servers[].name`. */
+  urls: Record<string, string>;
+  /** Test-run env: `VIBEHARD_BASE_URL` plus `VIBEHARD_<NAME>_URL` per server. */
+  env: Record<string, string>;
+  children: CoverageChild[];
+  /** Stop every started server (reverse order) and merge their coverage. */
+  stop: () => Promise<ScriptInput[]>;
 }
 
-/**
- * Start the config `app` under V8 coverage. Readiness is a bare TCP
- * connect: an HTTP request would execute app symbols before the test
- * window and NODE_V8_COVERAGE counts are cumulative per process.
- */
-export async function startAppServer(
-  resolved: ResolvedConfig,
-  port: number,
-): Promise<AppServerSession | null> {
+interface ServerEntry {
+  name: string;
+  config: ResolvedConfig["config"]["app"];
+}
+
+function substitutePorts(
+  value: string,
+  ownName: string,
+  ports: Readonly<Record<string, number>>,
+): string {
+  const named = value.replace(/\{port:([a-zA-Z][a-zA-Z0-9_-]*)\}/g, (_m, name: string) => {
+    const port = ports[name];
+    if (port === undefined) {
+      throw new VibehardUsageError(
+        `vibehard: {port:${name}} in server "${ownName}" config names an unknown server (known: ${Object.keys(ports).sort().join(", ") || "none"})`,
+      );
+    }
+    return String(port);
+  });
+  const own = ports[ownName];
+  return own === undefined ? named : named.split("{port}").join(String(own));
+}
+
+function serverEntries(resolved: ResolvedConfig): ServerEntry[] {
+  const entries: ServerEntry[] = (resolved.config.servers ?? []).map((s) => ({
+    name: s.name,
+    config: s,
+  }));
   const app = resolved.config.app;
-  if (app === undefined) return null;
-  const baseUrl = substitutePort(app.url, port).replace(/\/$/, "");
+  if (app !== undefined && app.external !== true) entries.push({ name: "app", config: app });
+  return entries;
+}
+
+async function startEntry(
+  resolved: ResolvedConfig,
+  entry: ServerEntry,
+  ports: Readonly<Record<string, number>>,
+): Promise<{ url: string; child: CoverageChild }> {
+  const cfg = entry.config;
+  if (cfg === undefined) throw new VibehardUsageError(`vibehard: server "${entry.name}" has no config`);
+  const baseUrl = substitutePorts(cfg.url, entry.name, ports).replace(/\/$/, "");
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(app.env ?? {})) {
-    env[key] = substitutePort(value, port);
+  for (const [key, value] of Object.entries(cfg.env ?? {})) {
+    env[key] = substitutePorts(value, entry.name, ports);
   }
-  const cwd = path.resolve(resolved.rootDir, app.cwd ?? ".");
+  const cwd = path.resolve(resolved.rootDir, cfg.cwd ?? ".");
   const child =
-    app.args !== undefined
+    cfg.args !== undefined
       ? spawnWithCoverage({
-          command: app.command,
-          args: app.args.map((a) => substitutePort(a, port)),
+          command: substitutePorts(cfg.command, entry.name, ports),
+          args: cfg.args.map((a) => substitutePorts(a, entry.name, ports)),
           cwd,
           env,
         })
-      : spawnWithCoverage({ command: app.command, cwd, env, shell: true, detached: true });
+      : spawnWithCoverage({ command: cfg.command, cwd, env, shell: true, detached: true });
 
   const url = new URL(baseUrl);
   const host = url.hostname;
   const tcpPort = Number(url.port !== "" ? url.port : url.protocol === "https:" ? 443 : 80);
-  const deadline = Date.now() + (app.readyTimeoutMs ?? 30_000);
+  const deadline = Date.now() + (cfg.readyTimeoutMs ?? 30_000);
   for (;;) {
     if (child.process.exitCode !== null) {
       throw new VibehardUsageError(
-        `vibehard: app server exited early (code ${child.process.exitCode})\n${child.output()}`,
+        `vibehard: server "${entry.name}" exited early (code ${child.process.exitCode})\n${child.output()}`,
       );
     }
     const connected = await tryConnect(host, tcpPort);
@@ -297,12 +335,87 @@ export async function startAppServer(
     if (Date.now() > deadline) {
       await child.stop().catch(() => []);
       throw new VibehardUsageError(
-        `vibehard: app server did not listen on ${host}:${tcpPort} in time\n${child.output()}`,
+        `vibehard: server "${entry.name}" did not listen on ${host}:${tcpPort} in time\n${child.output()}`,
       );
     }
     await new Promise((r) => setTimeout(r, 100));
   }
-  return { baseUrl, child, stop: () => child.stop() };
+  return { url: baseUrl, child };
+}
+
+/**
+ * Start every config server under V8 coverage: `servers` in order, then
+ * `app` (unless `external`). Each entry gets its own free port; `{port}`
+ * in an entry's command/args/env/url is its own port and `{port:<name>}`
+ * is another entry's. Readiness is a bare TCP connect: an HTTP request
+ * would execute app symbols before the test window and
+ * NODE_V8_COVERAGE counts are cumulative per process. Coverage from
+ * every process (including workers a server itself spawns, which
+ * inherit NODE_V8_COVERAGE) is merged on stop.
+ */
+export async function startServers(
+  resolved: ResolvedConfig,
+  fixedPorts: Readonly<Record<string, number>> = {},
+): Promise<ServersSession> {
+  const entries = serverEntries(resolved);
+  const ports: Record<string, number> = {};
+  for (const entry of entries) {
+    ports[entry.name] = fixedPorts[entry.name] ?? (await freePort());
+  }
+  const urls: Record<string, string> = {};
+  const app = resolved.config.app;
+  if (app !== undefined && app.external === true) {
+    if (app.url.includes("{port}")) {
+      throw new VibehardUsageError(
+        "vibehard: app.url contains {port} but app is external (Vibehard assigns no port to an external app); use a literal URL or {port:<server>}",
+      );
+    }
+    urls["app"] = substitutePorts(app.url, "app", ports).replace(/\/$/, "");
+  }
+  const started: CoverageChild[] = [];
+  const stopStarted = async (): Promise<ScriptInput[]> => {
+    const scripts: ScriptInput[] = [];
+    for (const child of [...started].reverse()) {
+      scripts.push(...(await child.stop().catch(() => [])));
+    }
+    started.length = 0;
+    return scripts;
+  };
+  try {
+    for (const entry of entries) {
+      const { url, child } = await startEntry(resolved, entry, ports);
+      urls[entry.name] = url;
+      started.push(child);
+    }
+  } catch (error) {
+    await stopStarted().catch(() => []);
+    throw error;
+  }
+  const baseUrl = urls["app"] ?? null;
+  const env: Record<string, string> = {};
+  if (baseUrl !== null) env["VIBEHARD_BASE_URL"] = baseUrl;
+  for (const [name, url] of Object.entries(urls)) {
+    env[`VIBEHARD_${name.toUpperCase().replace(/-/g, "_")}_URL`] = url;
+  }
+  return { baseUrl, urls, env, children: started, stop: stopStarted };
+}
+
+/**
+ * Start the config `app` under V8 coverage on a caller-allocated port.
+ * Kept for compatibility; `startServers` covers app + extra servers.
+ */
+export async function startAppServer(
+  resolved: ResolvedConfig,
+  port: number,
+): Promise<AppServerSession | null> {
+  if (resolved.config.app === undefined) return null;
+  const session = await startServers(resolved, { app: port });
+  const child = session.children[session.children.length - 1];
+  if (session.baseUrl === null || child === undefined) {
+    await session.stop().catch(() => []);
+    return null;
+  }
+  return { baseUrl: session.baseUrl, child, stop: () => session.stop() };
 }
 
 function tryConnect(host: string, port: number): Promise<boolean> {

@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: Stage 0, Stage 1, Stage 2, Stage 3, and Stage 4 complete. Next: Stage 5 (Next.js full-stack and separate-backend support).
+Status: Stage 0, Stage 1, Stage 2, Stage 3, Stage 4, and Stage 5 complete. Next: Stage 6 (Puppeteer and Cypress adapters).
 
 ## Goal
 
@@ -254,9 +254,16 @@ reason printed. Machine-readable `--json` on every command.
 - `framework`: `'playwright' | 'puppeteer' | 'cypress'`.
 - `app`: `{ command, url, cwd? }` for the app server Vibehard starts (or
   `external: true` when the framework config already starts it, e.g.
-  Playwright `webServer`; server coverage then requires the documented env
-  wiring that `vibehard init` prints).
-- `servers`: optional extra labeled Node processes (separate backend shape).
+  Playwright `webServer`). As shipped in Stage 5, `external` is accepted
+  by `vibehard test` selection only: per-test server coverage cannot be
+  attributed to a process Vibehard does not start and stop, so
+  `verify`/`record` reject it with that reason. `{port}` in an entry's
+  command/args/env/url is that entry's assigned port; `{port:<name>}`
+  is another entry's.
+- `servers`: optional extra labeled Node processes (separate backend
+  shape), started in order before `app`; each gets its own port and a
+  `VIBEHARD_<NAME>_URL` env export for specs, and its coverage merges
+  into every test's observed set.
 - `include` / `ignore`: globs bounding app source that counts as symbols.
 - `baseBranch`, `testDir`, `lockfile` path overrides.
 - `fallback`: `'full'` (default, only v1 value) for unsafe selection.

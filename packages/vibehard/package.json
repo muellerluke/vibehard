@@ -46,6 +46,7 @@
     "typescript": "^5.7.2"
   },
   "devDependencies": {
+    "@jridgewell/gen-mapping": "^0.3.13",
     "@playwright/test": "^1.59.0",
     "@types/node": "^22.10.0",
     "esbuild": "^0.27.7",

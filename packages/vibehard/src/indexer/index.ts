@@ -611,6 +611,9 @@ function relativePosix(root: string, absFile: string): string | null {
 
 function isIndexablePath(relPosix: string): boolean {
   if (/\.d\.[cm]?ts$/.test(relPosix)) return false;
+  // Build output is never app source, even when a tsconfig includes it
+  // (Next adds `.next/types/**/*.ts` for route type generation).
+  if (relPosix.split("/").includes(".next")) return false;
   return /\.[cm]?[tj]sx?$/.test(relPosix);
 }
 

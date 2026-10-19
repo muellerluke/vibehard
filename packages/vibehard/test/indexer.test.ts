@@ -440,4 +440,23 @@ describe("edge cases", () => {
   }, TIMEOUT);
 });
 
+describe("Stage 5: Next.js shapes", () => {
+  it("indexes server actions and Pages API handlers, excludes .next output", async () => {
+    const dir = writeProject({
+      "src/app/actions.ts":
+        '"use server";\nexport async function saveNote(note: string) { return { ok: note.length > 0 }; }\n',
+      "src/pages/api/hello.ts":
+        "export default function handler(req: unknown, res: { json: (v: unknown) => void }) { res.json({ ok: true }); }\n",
+      "src/.next/types/gen.ts": "export function generated() { return 1; }\n",
+    });
+    const result = await indexProject(dir);
+    const found = ids(result);
+    expect(found).toContain("src/app/actions.ts#saveNote");
+    expect(found).toContain("src/pages/api/hello.ts#handler");
+    expect(found.some((id) => id.includes(".next"))).toBe(false);
+    const action = result.symbols.find((s) => s.id === "src/app/actions.ts#saveNote");
+    expect(action?.kind).toBe("function");
+  }, TIMEOUT);
+});
+
 

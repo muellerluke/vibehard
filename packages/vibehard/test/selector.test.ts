@@ -514,7 +514,7 @@ describe("Stage 4 runner and explain", () => {
 });
 
 // --- integration: AT-17 recall audit (tiny-app half) ----------------------
-// The examples/next-fullstack half lands with Stage 5 (AT-19).
+// The examples/next-fullstack half lives in test/next-fullstack.test.ts.
 
 describe("AT-17 recall audit on fixtures/tiny-app", () => {
   const mutations: { symbol: string; mutate: (dir: string) => void }[] = [

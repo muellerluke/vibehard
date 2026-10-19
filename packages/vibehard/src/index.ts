@@ -103,6 +103,7 @@ export {
   spawnCapture,
   stableStringify,
   startAppServer,
+  startServers,
   verifyProject,
   writeLockfile,
 } from "./verifier/index.js";
@@ -121,6 +122,7 @@ export type {
   ResolvedConfig,
   RewriteResult,
   RuntimeDeclaration,
+  ServersSession,
   SpawnCaptureResult,
   TestVerifyResult,
   TestVerifyStatus,
@@ -128,6 +130,7 @@ export type {
   VibehardAppConfig,
   VibehardConfig,
   VibehardLockfile,
+  VibehardServerConfig,
   VibehardTestOptions,
 } from "./verifier/index.js";
 export {
@@ -175,3 +178,9 @@ export type {
   TestProjectOptions,
   TestProjectResult,
 } from "./selector/index.js";
+export { formatInitReport, initProject } from "./init/index.js";
+export type {
+  InitDetection,
+  InitProjectOptions,
+  InitProjectResult,
+} from "./init/index.js";
