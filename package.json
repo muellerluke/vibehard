@@ -1,0 +1,26 @@
+{
+  "name": "vibehard-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "fixtures/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w vibehard",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.71.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,1 @@
+{"name":"tiny-app","version":"0.0.0","private":true,"type":"module","scripts":{"typecheck":"tsc --noEmit"},"dependencies":{"vibehard":"*"},"devDependencies":{"@types/react":"^19.3.0","@types/react-dom":"^19.3.0","react":"^19.3.1"}}
