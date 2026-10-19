@@ -134,3 +134,9 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# vibehard fixture build output + Playwright artifacts
+.build/
+test-results/
+playwright-report/
+.vh-test-*/

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "framework": {
+    "name": "playwright",
+    "version": "1.59.0"
+  },
+  "configHash": "582775a202a56fa286d194cca75e3452ec801acd79da41739df1a1f87a323e8e",
+  "tests": {
+    "e2e/checkout.spec.ts::checkout page shows the cart total": {
+      "file": "e2e/checkout.spec.ts",
+      "titlePath": [
+        "checkout page shows the cart total"
+      ],
+      "declared": [
+        "src/app/checkout/page.tsx#CheckoutPage",
+        "src/lib/cart.ts#Cart.addItem",
+        "src/lib/format.ts#formatPrice"
+      ],
+      "symbolHashes": {
+        "src/app/checkout/page.tsx#CheckoutPage": "233acb22755a64660df8fb5ce10f75d1c8c8ee7a8b3e043a194aff1acca8253c",
+        "src/lib/cart.ts#Cart.addItem": "c81885bc5940f0d98d1e6028de849f94b1e4016272b7c07c76d968871a9c90b3",
+        "src/lib/format.ts#formatPrice": "57949532e9722f541b0450a3991f158d6b28bc436c4dbc4b418b79994721ba75"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    },
+    "e2e/checkout.spec.ts::coupon api accepts a code": {
+      "file": "e2e/checkout.spec.ts",
+      "titlePath": [
+        "coupon api accepts a code"
+      ],
+      "declared": [
+        "src/app/api/coupons/route.ts#POST"
+      ],
+      "symbolHashes": {
+        "src/app/api/coupons/route.ts#POST": "d0a8bdb7452b9cad199566fcc233444221c544789f5f60a4aeaad1812f60f1b2"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    }
+  }
+}

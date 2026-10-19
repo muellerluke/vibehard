@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: Stage 0 and Stage 1 complete. Next: Stage 2 (coverage observation).
+Status: Stage 0, Stage 1, Stage 2, and Stage 3 complete. Next: Stage 4 (change selection and `vibehard test`).
 
 ## Goal
 

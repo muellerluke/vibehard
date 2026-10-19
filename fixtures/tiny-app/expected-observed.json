@@ -1,0 +1,20 @@
+{
+  "pageLoad": {
+    "client": [
+      "src/lib/cart.ts#Cart.addItem",
+      "src/lib/format.ts#formatPrice"
+    ],
+    "server": [
+      "src/app/checkout/page.tsx#CheckoutPage",
+      "src/lib/format.ts#formatPrice"
+    ],
+    "merged": [
+      "src/app/checkout/page.tsx#CheckoutPage",
+      "src/lib/cart.ts#Cart.addItem",
+      "src/lib/format.ts#formatPrice"
+    ]
+  },
+  "couponPostServerAdds": [
+    "src/app/api/coupons/route.ts#POST"
+  ]
+}

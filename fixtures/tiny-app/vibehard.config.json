@@ -1,0 +1,15 @@
+{
+  "framework": "playwright",
+  "app": {
+    "command": "node",
+    "args": [".build/server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": {
+      "TINY_APP_PORT": "{port}",
+      "TINY_APP_CLIENT_BUNDLE": ".build/client.mjs"
+    }
+  },
+  "testDir": "e2e",
+  "playwright": { "project": "chromium" },
+  "generatedScripts": [{ "urlEndsWith": "/client.js", "path": ".build/client.mjs" }]
+}

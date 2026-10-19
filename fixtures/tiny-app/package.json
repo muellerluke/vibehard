@@ -1,1 +1,20 @@
-{"name":"tiny-app","version":"0.0.0","private":true,"type":"module","scripts":{"typecheck":"tsc --noEmit"},"dependencies":{"vibehard":"*"},"devDependencies":{"@types/react":"^19.3.0","@types/react-dom":"^19.3.0","react":"^19.3.1"}}
+{
+  "name": "tiny-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:harness": "node build-harness.mjs"
+  },
+  "dependencies": {
+    "vibehard": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.27.7",
+    "react": "^19.3.1"
+  }
+}

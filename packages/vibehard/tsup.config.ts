@@ -9,6 +9,7 @@ export default defineConfig({
     cypress: "src/adapters/cypress/index.ts",
   },
   format: ["esm", "cjs"],
+  external: ["@playwright/test", "playwright", "playwright-core"],
   dts: true,
   sourcemap: true,
   clean: true,
