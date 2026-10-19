@@ -76,12 +76,27 @@ ID of the form `<relative-file>#<qualified-name>`, for example
 
 Symbol kinds indexed:
 
-- Executable: function declarations, arrow/function expressions assigned to a
-  named binding, class methods/getters/setters/constructors, React
-  components (plain function symbols), object-literal methods, and Next.js
-  route/page exports by export name.
-- `value`: every top-level non-function binding (`const`/`let`/`var`), enum,
-  non-function class field, and class static block — e.g.
+- Executable: function declarations (including inside namespaces),
+  arrow/function expressions assigned to a named binding, class
+  methods/getters/setters/constructors (including `#private` members and
+  statically named computed members such as `["checkout"]` or
+  `[Symbol.iterator]`), React components (plain function symbols),
+  object-literal methods, methods of objects returned directly by an
+  IIFE/factory callee or attached by a top-level `a.b = …` assignment, and
+  Next.js route/page exports by export name. Member IDs are always
+  disambiguated from the member alone: statics live under `.static.`
+  (`Cart.static.create` vs `Cart.create`) and accessors take a
+  `:get`/`:set` suffix (`Cart.total:get`).
+- `class`: the class declaration itself, e.g. `src/lib/cart.ts#Cart`. Its
+  range spans the whole class, but its hash covers only the header
+  (decorators, name, type parameters, `extends`/`implements`) and any
+  static blocks, so header edits select tests that only ran members
+  without member edits churning the class hash.
+- `value`: every non-function binding in a declaration scope (top level or
+  namespace) — `const`/`let`/`var` including each identifier bound by a
+  destructuring pattern (`const { taxRate } = settings` is its own symbol),
+  enums, non-function class fields, and individual object-literal
+  properties (`settings.taxRate` alongside `settings`) — e.g.
   `src/lib/format.ts#CENTS_PER_DOLLAR`. Local constants inside a function
   need no symbol; they live inside that function's range and hash.
 - `module`: one `file#<module>` per source file covering leftover top-level
@@ -95,8 +110,15 @@ Symbol kinds indexed:
 Each symbol records its file, qualified name, kind, source range, and
 `references`: the symbol IDs it statically references, resolved through the
 TypeChecker (aliases and re-exports followed to the defining declaration).
-Anonymous inline callbacks are attributed to their nearest enclosing named
-symbol. Every non-blank line of an app file belongs to exactly one smallest
+References include ordinary and `#private` identifiers, namespace-qualified
+names, string-literal element access (`cart["total"]`), the property a
+destructured binding reads, and identifiers in class heritage clauses and
+decorators (owned by the class symbol). Anonymous inline callbacks are
+attributed to their nearest enclosing named symbol. Executed code with no
+named enclosing symbol (dynamically computed members, top-level anonymous
+handlers) is never dropped: it attributes to the nearest class symbol or,
+failing that, the file's `module` symbol, trading precision for soundness.
+Every non-blank line of an app file belongs to exactly one smallest
 symbol — this is what makes changed-line attribution total.
 
 Invariant: symbol IDs are stable across formatting-only edits and line moves
@@ -109,11 +131,12 @@ inside the same file. A rename or move to another file is a new symbol ID;
   single test ran, collected from browser and server coverage and remapped
   through source maps to original source ranges.
 - Touched set: the recorded mapping for a test — its observed set plus
-  (a) the `module` symbol of every file containing an observed symbol, and
-  (b) the static-reference closure over value/module/asset symbols: every
+  (a) the `module` symbol of every file containing an observed symbol,
+  (b) the `class` symbol of every class containing a touched symbol, and
+  (c) the static-reference closure over value/module/asset symbols: every
   constant, module, or asset reachable by following `references` from the
   seeds through value initializers. Each entry is tagged `direct`,
-  `referenced`, `module`, or `asset`. The closure never adds an executable
+  `referenced`, `module`, `class`, or `asset`. The closure never adds an executable
   symbol: an executable reached only by reference either ran (and is
   already a direct seed) or did not run. Merely being named — a route
   handler passed to `app.get(...)` at module scope — is not execution.

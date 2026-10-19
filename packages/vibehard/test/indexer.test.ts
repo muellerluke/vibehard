@@ -174,6 +174,7 @@ describe("AT-03: symbol ID stability", () => {
     "src/app/checkout/page.tsx#<module>",
     "src/app/checkout/page.tsx#CheckoutPage",
     "src/lib/cart.ts#<module>",
+    "src/lib/cart.ts#Cart",
     "src/lib/cart.ts#Cart.addItem",
     "src/lib/cart.ts#Cart.items",
     "src/lib/format.ts#<module>",
@@ -357,15 +358,16 @@ describe("synthetic projects: JS/JSX and remaining symbol kinds", () => {
     expect(byId.get("src/handlers.ts#handlers.nested.deep")?.kind).toBe(
       "object-method",
     );
-    expect(byId.get("src/handlers.ts#Box.value")?.kind).toBe("method");
+    expect(byId.get("src/handlers.ts#Box.value:get")?.kind).toBe("method");
     expect(byId.get("src/handlers.ts#Box.outer")?.kind).toBe("method");
     expect(byId.get("src/handlers.ts#withInner")?.kind).toBe("function");
     expect(byId.get("src/app/page.tsx#default")?.kind).toBe("page-export");
     expect(byId.get("src/app/api/route.ts#GET")?.kind).toBe("route-export");
 
-    // No bare class records; an object binding is a value symbol whose
-    // methods are smaller symbols inside it. Nested functions fold.
-    expect(byId.has("src/handlers.ts#Box")).toBe(false);
+    // The class itself is a symbol (its header); an object binding is a
+    // value symbol whose methods are smaller symbols inside it. Nested
+    // functions fold.
+    expect(byId.get("src/handlers.ts#Box")?.kind).toBe("class");
     expect(byId.get("src/handlers.ts#handlers")?.kind).toBe("value");
     expect(
       result.symbols.some((s) => s.qualifiedName.includes("innerHelper")),

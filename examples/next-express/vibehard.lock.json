@@ -5,7 +5,7 @@
     "version": "1.59.0"
   },
   "configHash": "aa3fb3614df5e09dd81bd0694cd1aed019f4289bb5ff4b9eb912c421e177d639",
-  "graphVersion": 2,
+  "graphVersion": 3,
   "tests": {
     "e2e/app.spec.ts::order api prices an order": {
       "file": "e2e/app.spec.ts",

@@ -74,6 +74,23 @@
     "references": []
   },
   {
+    "id": "src/lib/cart.ts#Cart",
+    "file": "src/lib/cart.ts",
+    "qualifiedName": "Cart",
+    "kind": "class",
+    "startOffset": 88,
+    "endOffset": 358,
+    "startLine": 7,
+    "endLine": 18,
+    "hashSlices": [
+      {
+        "startOffset": 88,
+        "endOffset": 105
+      }
+    ],
+    "references": []
+  },
+  {
     "id": "src/lib/cart.ts#Cart.addItem",
     "file": "src/lib/cart.ts",
     "qualifiedName": "Cart.addItem",

@@ -5,7 +5,7 @@
     "version": "24.43.1"
   },
   "configHash": "cff18691a3324bba7a674c6fb64a875646d44deb057a4bf216fa9a944b090723",
-  "graphVersion": 2,
+  "graphVersion": 3,
   "tests": {
     "e2e/app.test.mjs::home page shows the cart total": {
       "file": "e2e/app.test.mjs",
@@ -14,6 +14,7 @@
       ],
       "touched": {
         "src/lib/cart.ts#<module>": "module",
+        "src/lib/cart.ts#Cart": "class",
         "src/lib/cart.ts#Cart.addItem": "direct",
         "src/lib/cart.ts#Cart.items": "direct",
         "src/lib/cart.ts#Cart.totalCents": "direct",
@@ -29,6 +30,7 @@
       },
       "symbolHashes": {
         "src/lib/cart.ts#<module>": "7f41389714a5a8eaa3d43132965ea02c76c56ee00f9b1b18942108a5ca68ba66",
+        "src/lib/cart.ts#Cart": "369c8b8be3ece51c30a37316d65607b5e063546140bd8ad85f7df319bdf134fa",
         "src/lib/cart.ts#Cart.addItem": "da80fc7a449970beaf45a1d084221517c02006d0aa30b30d32eab93cbaee867c",
         "src/lib/cart.ts#Cart.items": "1bc04f6f9d9f7bbba612bcedd8b2cb4e054ea2544f54f667246a8d77d5f63ea7",
         "src/lib/cart.ts#Cart.totalCents": "b66cb82df764a7b9faae5252202a16a3d8138a8323cb83fc90d440e59df72c5e",

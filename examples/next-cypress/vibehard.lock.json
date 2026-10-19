@@ -5,7 +5,7 @@
     "version": "14.5.4"
   },
   "configHash": "0122b3d423a33fd084e8a633ef7a572a6db14d6ef2bf1565c127adaa9cfbe81f",
-  "graphVersion": 2,
+  "graphVersion": 3,
   "tests": {
     "cypress/e2e/app.cy.js::home page prices, counts, and saves a note": {
       "file": "cypress/e2e/app.cy.js",

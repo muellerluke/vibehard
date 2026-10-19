@@ -189,7 +189,8 @@ describe("range→symbol mapping", () => {
           origin: "server",
         },
         {
-          // Module top-level (interface): no named symbol, ignored.
+          // No named symbol contains this range: it attributes to the
+          // file's module symbol instead of being dropped.
           file: "src/lib/cart.ts",
           startOffset: cartText.indexOf("sku: string"),
           endOffset: cartText.indexOf("sku: string") + 4,
@@ -198,9 +199,13 @@ describe("range→symbol mapping", () => {
       ],
       index.symbols,
     );
-    expect(result.byOrigin.client).toEqual(["src/lib/cart.ts#Cart.addItem"]);
+    expect(result.byOrigin.client).toEqual([
+      "src/lib/cart.ts#<module>",
+      "src/lib/cart.ts#Cart.addItem",
+    ]);
     expect(result.byOrigin.server).toEqual(["src/lib/cart.ts#Cart.addItem"]);
-    expect(result.ignoredRanges).toBe(1);
+    expect(result.moduleFallbackRanges).toBe(1);
+    expect(result.ignoredRanges).toBe(0);
   });
 
   it("fails closed for an executed app script without a source map", () => {

@@ -8,7 +8,7 @@ import ts from "typescript";
 import type { SymbolKind, SymbolRecord } from "../index.js";
 
 /** Bump when extraction rules change; part of every cache key. */
-export const INDEXER_VERSION = 2;
+export const INDEXER_VERSION = 3;
 
 const ROUTE_METHODS = new Set([
   "GET",
@@ -296,108 +296,38 @@ function collectDiagnostics(
   return out;
 }
 
+interface ExtractCtx {
+  tsApi: typeof ts;
+  sourceFile: ts.SourceFile;
+  rel: string;
+  isRouteFile: boolean;
+  isPageFile: boolean;
+  out: SymbolRecord[];
+  /** Identifier named by a top-level `export default <ident>;`. */
+  defaultExportName: string | null;
+}
+
 function extractSymbols(
   tsApi: typeof ts,
   sourceFile: ts.SourceFile,
   rel: string,
 ): SymbolRecord[] {
-  const out: SymbolRecord[] = [];
   const stem = fileStem(rel);
-  const isRouteFile = stem === "route";
-  const isPageFile = stem === "page" || stem === "layout";
-  let defaultExportName: string | null = null;
-
-  for (const stmt of sourceFile.statements) {
-    if (tsApi.isFunctionDeclaration(stmt)) {
-      if (stmt.body === undefined) continue; // overload signature
-      const isDefault = hasModifier(tsApi, stmt, tsApi.SyntaxKind.DefaultKeyword);
-      if (stmt.name === undefined && !isDefault) continue;
-      const name = stmt.name?.text ?? "default";
-      let kind: SymbolKind = "function";
-      if (isDefault && isPageFile) {
-        kind = "page-export";
-      } else if (
-        isRouteFile &&
-        hasModifier(tsApi, stmt, tsApi.SyntaxKind.ExportKeyword) &&
-        ROUTE_METHODS.has(name)
-      ) {
-        kind = "route-export";
-      }
-      out.push(makeRecord(tsApi, sourceFile, rel, stmt, name, kind));
-    } else if (tsApi.isClassDeclaration(stmt)) {
-      const isDefault = hasModifier(tsApi, stmt, tsApi.SyntaxKind.DefaultKeyword);
-      const className = stmt.name?.text ?? (isDefault ? "default" : null);
-      if (className === null) continue;
-      extractClassMembers(tsApi, sourceFile, rel, stmt, className, out);
-    } else if (tsApi.isVariableStatement(stmt)) {
-      const exported = hasModifier(tsApi, stmt, tsApi.SyntaxKind.ExportKeyword);
-      for (const decl of stmt.declarationList.declarations) {
-        if (!tsApi.isIdentifier(decl.name)) {
-          continue;
-        }
-        const name = decl.name.text;
-        if (decl.initializer === undefined) {
-          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
-          continue;
-        }
-        const init = unwrapExpression(tsApi, decl.initializer);
-        if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
-          let kind: SymbolKind = tsApi.isArrowFunction(init)
-            ? "arrow-function"
-            : "function";
-          if (exported && isRouteFile && ROUTE_METHODS.has(name)) {
-            kind = "route-export";
-          }
-          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, kind));
-        } else if (tsApi.isObjectLiteralExpression(init)) {
-          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
-          extractObjectMethods(tsApi, sourceFile, rel, init, name, out);
-        } else if (tsApi.isClassExpression(init)) {
-          extractClassMembers(tsApi, sourceFile, rel, init, name, out);
-        } else {
-          out.push(makeRecord(tsApi, sourceFile, rel, decl, name, "value"));
-        }
-      }
-    } else if (tsApi.isExportAssignment(stmt)) {
-      if (stmt.isExportEquals) continue;
-      const expr = unwrapExpression(tsApi, stmt.expression);
-      if (tsApi.isIdentifier(expr)) {
-        // Already recorded at its declaration; remember for page fix-up.
-        defaultExportName = expr.text;
-      } else if (tsApi.isArrowFunction(expr) || tsApi.isFunctionExpression(expr)) {
-        const name =
-          (tsApi.isFunctionExpression(expr) ? expr.name?.text : undefined) ??
-          "default";
-        const kind: SymbolKind = isPageFile
-          ? "page-export"
-          : tsApi.isArrowFunction(expr)
-            ? "arrow-function"
-            : "function";
-        out.push(makeRecord(tsApi, sourceFile, rel, stmt, name, kind));
-      } else if (tsApi.isClassExpression(expr)) {
-        extractClassMembers(
-          tsApi,
-          sourceFile,
-          rel,
-          expr,
-          expr.name?.text ?? "default",
-          out,
-        );
-      } else if (tsApi.isObjectLiteralExpression(expr)) {
-        out.push(makeRecord(tsApi, sourceFile, rel, stmt, "default", "value"));
-        extractObjectMethods(tsApi, sourceFile, rel, expr, "default", out);
-      } else {
-        out.push(makeRecord(tsApi, sourceFile, rel, stmt, "default", "value"));
-      }
-    } else if (tsApi.isEnumDeclaration(stmt)) {
-      out.push(makeRecord(tsApi, sourceFile, rel, stmt, stmt.name.text, "value"));
-    }
-  }
+  const ctx: ExtractCtx = {
+    tsApi,
+    sourceFile,
+    rel,
+    isRouteFile: stem === "route",
+    isPageFile: stem === "page" || stem === "layout",
+    out: [],
+    defaultExportName: null,
+  };
+  walkStatements(ctx, sourceFile.statements, "", true);
 
   // `const Page = () => ...; export default Page;` in a page/layout file.
-  if (isPageFile && defaultExportName !== null) {
-    for (const record of out) {
-      if (record.qualifiedName === defaultExportName) {
+  if (ctx.isPageFile && ctx.defaultExportName !== null) {
+    for (const record of ctx.out) {
+      if (record.qualifiedName === ctx.defaultExportName) {
         record.kind = "page-export";
       }
     }
@@ -408,7 +338,25 @@ function extractSymbols(
   // spans the file so any line not in a smaller symbol still maps; its
   // hash covers only the leftover statement slices.
   const hashSlices: { startOffset: number; endOffset: number }[] = [];
-  for (const stmt of sourceFile.statements) {
+  collectModuleHashSlices(ctx, sourceFile.statements, hashSlices);
+  const moduleRecord = makeRecord(tsApi, sourceFile, rel, sourceFile, "<module>", "module");
+  moduleRecord.startOffset = 0;
+  moduleRecord.endOffset = sourceFile.text.length;
+  moduleRecord.startLine = 1;
+  moduleRecord.endLine =
+    sourceFile.getLineAndCharacterOfPosition(Math.max(0, sourceFile.text.length - 1)).line + 1;
+  moduleRecord.hashSlices = hashSlices;
+  ctx.out.push(moduleRecord);
+  return ctx.out;
+}
+
+function collectModuleHashSlices(
+  ctx: ExtractCtx,
+  statements: readonly ts.Statement[],
+  slices: { startOffset: number; endOffset: number }[],
+): void {
+  const { tsApi, sourceFile } = ctx;
+  for (const stmt of statements) {
     if (
       tsApi.isFunctionDeclaration(stmt) ||
       tsApi.isClassDeclaration(stmt) ||
@@ -418,39 +366,269 @@ function extractSymbols(
     ) {
       continue;
     }
-    hashSlices.push({ startOffset: stmt.getStart(sourceFile), endOffset: stmt.getEnd() });
+    if (tsApi.isModuleDeclaration(stmt)) {
+      // Namespace members carry their own symbols; only leftover
+      // statements inside the namespace belong to the module hash.
+      if (stmt.body !== undefined && tsApi.isModuleBlock(stmt.body)) {
+        collectModuleHashSlices(ctx, stmt.body.statements, slices);
+      } else if (stmt.body !== undefined && tsApi.isModuleDeclaration(stmt.body)) {
+        collectModuleHashSlices(ctx, [stmt.body], slices);
+      }
+      continue;
+    }
+    slices.push({ startOffset: stmt.getStart(sourceFile), endOffset: stmt.getEnd() });
   }
-  const moduleRecord = makeRecord(tsApi, sourceFile, rel, sourceFile, "<module>", "module");
-  moduleRecord.startOffset = 0;
-  moduleRecord.endOffset = sourceFile.text.length;
-  moduleRecord.startLine = 1;
-  moduleRecord.endLine =
-    sourceFile.getLineAndCharacterOfPosition(Math.max(0, sourceFile.text.length - 1)).line + 1;
-  moduleRecord.hashSlices = hashSlices;
-  out.push(moduleRecord);
-  return out;
 }
 
-function extractClassMembers(
-  tsApi: typeof ts,
-  sourceFile: ts.SourceFile,
-  rel: string,
-  cls: ts.ClassDeclaration | ts.ClassExpression,
-  className: string,
-  out: SymbolRecord[],
+/**
+ * Walk one declaration scope (a source file or a namespace block),
+ * emitting a symbol for every named declaration. Function bodies and
+ * bare blocks are not scopes: locals fold into their enclosing
+ * executable symbol.
+ */
+function walkStatements(
+  ctx: ExtractCtx,
+  statements: readonly ts.Statement[],
+  prefix: string,
+  topLevel: boolean,
 ): void {
+  const { tsApi, sourceFile, rel } = ctx;
+  for (const stmt of statements) {
+    if (tsApi.isFunctionDeclaration(stmt)) {
+      if (stmt.body === undefined) continue; // overload signature
+      const isDefault = hasModifier(tsApi, stmt, tsApi.SyntaxKind.DefaultKeyword);
+      if (stmt.name === undefined && !isDefault) continue;
+      const name = stmt.name?.text ?? "default";
+      let kind: SymbolKind = "function";
+      if (topLevel && isDefault && ctx.isPageFile) {
+        kind = "page-export";
+      } else if (
+        topLevel &&
+        ctx.isRouteFile &&
+        hasModifier(tsApi, stmt, tsApi.SyntaxKind.ExportKeyword) &&
+        ROUTE_METHODS.has(name)
+      ) {
+        kind = "route-export";
+      }
+      ctx.out.push(makeRecord(tsApi, sourceFile, rel, stmt, `${prefix}${name}`, kind));
+    } else if (tsApi.isClassDeclaration(stmt)) {
+      const isDefault = hasModifier(tsApi, stmt, tsApi.SyntaxKind.DefaultKeyword);
+      const className = stmt.name?.text ?? (isDefault ? "default" : null);
+      if (className === null) continue;
+      emitClass(ctx, stmt, `${prefix}${className}`);
+    } else if (tsApi.isVariableStatement(stmt)) {
+      const exported = hasModifier(tsApi, stmt, tsApi.SyntaxKind.ExportKeyword);
+      for (const decl of stmt.declarationList.declarations) {
+        emitVariableDeclaration(ctx, decl, prefix, topLevel, exported);
+      }
+    } else if (tsApi.isEnumDeclaration(stmt)) {
+      ctx.out.push(
+        makeRecord(tsApi, sourceFile, rel, stmt, `${prefix}${stmt.name.text}`, "value"),
+      );
+    } else if (tsApi.isModuleDeclaration(stmt)) {
+      walkModuleDeclaration(ctx, stmt, prefix);
+    } else if (tsApi.isExportAssignment(stmt)) {
+      if (topLevel) emitExportAssignment(ctx, stmt);
+    } else if (tsApi.isExpressionStatement(stmt)) {
+      emitAssignment(ctx, stmt, prefix);
+    }
+  }
+}
+
+function walkModuleDeclaration(
+  ctx: ExtractCtx,
+  decl: ts.ModuleDeclaration,
+  prefix: string,
+): void {
+  const { tsApi } = ctx;
+  if (!tsApi.isIdentifier(decl.name)) return; // ambient `declare module "x"`
+  if (decl.body === undefined) return;
+  const childPrefix = `${prefix}${decl.name.text}.`;
+  if (tsApi.isModuleBlock(decl.body)) {
+    walkStatements(ctx, decl.body.statements, childPrefix, false);
+  } else if (tsApi.isModuleDeclaration(decl.body)) {
+    walkModuleDeclaration(ctx, decl.body, childPrefix);
+  }
+}
+
+function emitExportAssignment(ctx: ExtractCtx, stmt: ts.ExportAssignment): void {
+  const { tsApi } = ctx;
+  if (stmt.isExportEquals) return;
+  const expr = unwrapExpression(tsApi, stmt.expression);
+  if (tsApi.isIdentifier(expr)) {
+    // Already recorded at its declaration; remember for page fix-up.
+    ctx.defaultExportName = expr.text;
+    return;
+  }
+  const qualified =
+    (tsApi.isFunctionExpression(expr) || tsApi.isClassExpression(expr)
+      ? expr.name?.text
+      : undefined) ?? "default";
+  emitInitializer(ctx, qualified, stmt, expr, (isArrow) =>
+    ctx.isPageFile ? "page-export" : isArrow ? "arrow-function" : "function",
+  );
+}
+
+function emitVariableDeclaration(
+  ctx: ExtractCtx,
+  decl: ts.VariableDeclaration,
+  prefix: string,
+  topLevel: boolean,
+  exported: boolean,
+): void {
+  const { tsApi, sourceFile, rel } = ctx;
+  if (!tsApi.isIdentifier(decl.name)) {
+    emitBindingPattern(ctx, decl.name, prefix);
+    return;
+  }
+  const name = decl.name.text;
+  if (decl.initializer === undefined) {
+    ctx.out.push(makeRecord(tsApi, sourceFile, rel, decl, `${prefix}${name}`, "value"));
+    return;
+  }
+  emitInitializer(ctx, `${prefix}${name}`, decl, decl.initializer, (isArrow) =>
+    topLevel && exported && ctx.isRouteFile && ROUTE_METHODS.has(name)
+      ? "route-export"
+      : isArrow
+        ? "arrow-function"
+        : "function",
+  );
+}
+
+/**
+ * One `value` symbol per identifier bound by a destructuring pattern
+ * (a function symbol when the element's default is a function). The
+ * shared initializer belongs to no single binding; its execution
+ * attributes to the enclosing scope through the module fallback.
+ */
+function emitBindingPattern(
+  ctx: ExtractCtx,
+  pattern: ts.BindingPattern,
+  prefix: string,
+): void {
+  const { tsApi, sourceFile, rel } = ctx;
+  for (const element of pattern.elements) {
+    if (!tsApi.isBindingElement(element)) continue; // array hole
+    if (tsApi.isIdentifier(element.name)) {
+      let kind: SymbolKind = "value";
+      if (element.initializer !== undefined) {
+        const init = unwrapExpression(tsApi, element.initializer);
+        if (tsApi.isArrowFunction(init)) kind = "arrow-function";
+        else if (tsApi.isFunctionExpression(init)) kind = "function";
+      }
+      ctx.out.push(
+        makeRecord(tsApi, sourceFile, rel, element, `${prefix}${element.name.text}`, kind),
+      );
+    } else {
+      emitBindingPattern(ctx, element.name, prefix);
+    }
+  }
+}
+
+/**
+ * Emit the symbol(s) for one named position with an initializer: a
+ * variable binding, a class field, an object property, an assignment
+ * target, or a default export. Functions take `fnKind`; classes emit
+ * their class symbol and members; object literals (including ones
+ * returned directly by an IIFE/factory callee) emit a `value` plus
+ * per-member symbols; everything else is one `value`.
+ */
+function emitInitializer(
+  ctx: ExtractCtx,
+  qualified: string,
+  node: ts.Node,
+  initializer: ts.Expression,
+  fnKind: (isArrow: boolean) => SymbolKind,
+): void {
+  const { tsApi, sourceFile, rel } = ctx;
+  const init = unwrapExpression(tsApi, initializer);
+  if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
+    ctx.out.push(
+      makeRecord(tsApi, sourceFile, rel, node, qualified, fnKind(tsApi.isArrowFunction(init))),
+    );
+    return;
+  }
+  if (tsApi.isClassExpression(init)) {
+    emitClass(ctx, init, qualified);
+    return;
+  }
+  if (tsApi.isObjectLiteralExpression(init)) {
+    ctx.out.push(makeRecord(tsApi, sourceFile, rel, node, qualified, "value"));
+    extractObjectMembers(ctx, init, qualified);
+    return;
+  }
+  const factory = factoryObjectLiteral(tsApi, init);
+  if (factory !== null) {
+    ctx.out.push(makeRecord(tsApi, sourceFile, rel, node, qualified, "value"));
+    extractObjectMembers(ctx, factory, qualified);
+    return;
+  }
+  ctx.out.push(makeRecord(tsApi, sourceFile, rel, node, qualified, "value"));
+}
+
+/**
+ * The object literal an IIFE/factory call directly returns, if any:
+ * `(() => ({ ... }))()`, `(() => { return { ... }; })()`.
+ */
+function factoryObjectLiteral(
+  tsApi: typeof ts,
+  expr: ts.Expression,
+): ts.ObjectLiteralExpression | null {
+  let current = expr;
+  if (tsApi.isAwaitExpression(current)) {
+    current = unwrapExpression(tsApi, current.expression);
+  }
+  if (!tsApi.isCallExpression(current)) return null;
+  const callee = unwrapExpression(tsApi, current.expression);
+  if (!tsApi.isArrowFunction(callee) && !tsApi.isFunctionExpression(callee)) return null;
+  if (tsApi.isBlock(callee.body)) {
+    if (callee.body.statements.length !== 1) return null;
+    const only = callee.body.statements[0];
+    if (only === undefined || !tsApi.isReturnStatement(only) || only.expression === undefined) {
+      return null;
+    }
+    const returned = unwrapExpression(tsApi, only.expression);
+    return tsApi.isObjectLiteralExpression(returned) ? returned : null;
+  }
+  const returned = unwrapExpression(tsApi, callee.body);
+  return tsApi.isObjectLiteralExpression(returned) ? returned : null;
+}
+
+/**
+ * Emit a class symbol plus one symbol per named member. The class
+ * symbol's range spans the whole class (containment), but its hash
+ * slices cover only the header — decorators, name, type parameters,
+ * heritage — and any static blocks, so member edits do not churn it.
+ * Static blocks are nameless and fold into the class symbol.
+ *
+ * Member IDs are always disambiguated from the member alone, never
+ * from its siblings: statics live under `.static.`, accessors take a
+ * `:get`/`:set` suffix (combined as `Cart.static.#x:get`).
+ */
+function emitClass(
+  ctx: ExtractCtx,
+  cls: ts.ClassDeclaration | ts.ClassExpression,
+  qualified: string,
+): void {
+  const { tsApi, sourceFile, rel } = ctx;
+  const classRecord = makeRecord(tsApi, sourceFile, rel, cls, qualified, "class");
+  const slices = [{ startOffset: classRecord.startOffset, endOffset: classHeaderEnd(ctx, cls) }];
   for (const member of cls.members) {
+    if (tsApi.isClassStaticBlockDeclaration(member)) {
+      slices.push({ startOffset: member.getStart(sourceFile), endOffset: member.getEnd() });
+    }
+  }
+  classRecord.hashSlices = slices;
+  ctx.out.push(classRecord);
+
+  for (const member of cls.members) {
+    const staticPrefix = hasModifier(tsApi, member, tsApi.SyntaxKind.StaticKeyword)
+      ? "static."
+      : "";
     if (tsApi.isConstructorDeclaration(member)) {
       if (member.body === undefined) continue;
-      out.push(
-        makeRecord(
-          tsApi,
-          sourceFile,
-          rel,
-          member,
-          `${className}.constructor`,
-          "method",
-        ),
+      ctx.out.push(
+        makeRecord(tsApi, sourceFile, rel, member, `${qualified}.constructor`, "method"),
       );
     } else if (
       tsApi.isMethodDeclaration(member) ||
@@ -460,44 +638,56 @@ function extractClassMembers(
       if (member.body === undefined) continue; // abstract or overload signature
       const name = memberName(tsApi, member.name);
       if (name === null) continue;
-      out.push(
-        makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "method"),
+      const suffix = tsApi.isGetAccessorDeclaration(member)
+        ? ":get"
+        : tsApi.isSetAccessorDeclaration(member)
+          ? ":set"
+          : "";
+      ctx.out.push(
+        makeRecord(
+          tsApi,
+          sourceFile,
+          rel,
+          member,
+          `${qualified}.${staticPrefix}${name}${suffix}`,
+          "method",
+        ),
       );
     } else if (tsApi.isPropertyDeclaration(member)) {
       const name = memberName(tsApi, member.name);
       if (name === null) continue;
+      const memberQualified = `${qualified}.${staticPrefix}${name}`;
       if (member.initializer === undefined) {
-        out.push(
-          makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "value"),
-        );
-        continue;
-      }
-      const init = unwrapExpression(tsApi, member.initializer);
-      if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
-        out.push(
-          makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "method"),
-        );
+        ctx.out.push(makeRecord(tsApi, sourceFile, rel, member, memberQualified, "value"));
       } else {
-        out.push(
-          makeRecord(tsApi, sourceFile, rel, member, `${className}.${name}`, "value"),
-        );
+        emitInitializer(ctx, memberQualified, member, member.initializer, () => "method");
       }
-    } else if (tsApi.isClassStaticBlockDeclaration(member)) {
-      out.push(
-        makeRecord(tsApi, sourceFile, rel, member, `${className}.<static>`, "value"),
-      );
     }
+    // Static blocks, index signatures, and semicolons name no member.
   }
 }
 
-function extractObjectMethods(
-  tsApi: typeof ts,
-  sourceFile: ts.SourceFile,
-  rel: string,
+/** End offset of the class header (through name/type params/heritage). */
+function classHeaderEnd(
+  ctx: ExtractCtx,
+  cls: ts.ClassDeclaration | ts.ClassExpression,
+): number {
+  let end = cls.name?.getEnd() ?? 0;
+  for (const param of cls.typeParameters ?? []) end = Math.max(end, param.getEnd());
+  for (const clause of cls.heritageClauses ?? []) end = Math.max(end, clause.getEnd());
+  if (end === 0) {
+    const first = cls.members[0];
+    end = first !== undefined ? first.getStart(ctx.sourceFile) : cls.getEnd();
+  }
+  return end;
+}
+
+function extractObjectMembers(
+  ctx: ExtractCtx,
   obj: ts.ObjectLiteralExpression,
   prefix: string,
-  out: SymbolRecord[],
 ): void {
+  const { tsApi, sourceFile, rel } = ctx;
   for (const prop of obj.properties) {
     if (
       tsApi.isMethodDeclaration(prop) ||
@@ -506,38 +696,67 @@ function extractObjectMethods(
     ) {
       const name = memberName(tsApi, prop.name);
       if (name === null) continue;
-      out.push(
-        makeRecord(
-          tsApi,
-          sourceFile,
-          rel,
-          prop,
-          `${prefix}.${name}`,
-          "object-method",
-        ),
+      const suffix = tsApi.isGetAccessorDeclaration(prop)
+        ? ":get"
+        : tsApi.isSetAccessorDeclaration(prop)
+          ? ":set"
+          : "";
+      ctx.out.push(
+        makeRecord(tsApi, sourceFile, rel, prop, `${prefix}.${name}${suffix}`, "object-method"),
       );
     } else if (tsApi.isPropertyAssignment(prop)) {
       const name = memberName(tsApi, prop.name);
       if (name === null) continue;
-      const init = unwrapExpression(tsApi, prop.initializer);
-      if (tsApi.isArrowFunction(init) || tsApi.isFunctionExpression(init)) {
-        out.push(
-          makeRecord(
-            tsApi,
-            sourceFile,
-            rel,
-            prop,
-            `${prefix}.${name}`,
-            "object-method",
-          ),
-        );
-      } else if (tsApi.isObjectLiteralExpression(init)) {
-        extractObjectMethods(tsApi, sourceFile, rel, init, `${prefix}.${name}`, out);
-      }
+      emitInitializer(ctx, `${prefix}.${name}`, prop, prop.initializer, () => "object-method");
+    } else if (tsApi.isShorthandPropertyAssignment(prop)) {
+      ctx.out.push(
+        makeRecord(tsApi, sourceFile, rel, prop, `${prefix}.${prop.name.text}`, "value"),
+      );
     }
-    // Shorthand and spread assignments name no new declaration range.
+    // Spread assignments name no new declaration.
   }
 }
+
+/**
+ * A top-level (or namespace-level) `a.b.c = …` assignment names its
+ * target: `exports.checkout = () => {}`, `module.exports = { … }`.
+ * Plain identifier assignments are not declarations and are ignored.
+ */
+function emitAssignment(
+  ctx: ExtractCtx,
+  stmt: ts.ExpressionStatement,
+  prefix: string,
+): void {
+  const { tsApi } = ctx;
+  const expr = stmt.expression;
+  if (
+    !tsApi.isBinaryExpression(expr) ||
+    expr.operatorToken.kind !== tsApi.SyntaxKind.EqualsToken
+  ) {
+    return;
+  }
+  const target = propertyChainName(tsApi, expr.left);
+  if (target === null) return;
+  emitInitializer(ctx, `${prefix}${target}`, expr, expr.right, (isArrow) =>
+    isArrow ? "arrow-function" : "function",
+  );
+}
+
+/** `module.exports.checkout` for a property-access chain, else null. */
+function propertyChainName(tsApi: typeof ts, expr: ts.Expression): string | null {
+  const parts: string[] = [];
+  let current: ts.Expression = expr;
+  while (tsApi.isPropertyAccessExpression(current)) {
+    if (!tsApi.isIdentifier(current.name)) return null;
+    parts.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (!tsApi.isIdentifier(current) || parts.length === 0) return null;
+  parts.unshift(current.text);
+  return parts.join(".");
+}
+
+
 
 function resolvedImportEdges(
   tsApi: typeof ts,
@@ -707,9 +926,30 @@ function smallestContaining(
   return best;
 }
 
+/** The element of a binding pattern that binds `name`, searching nested patterns. */
+function findBindingElement(
+  tsApi: typeof ts,
+  pattern: ts.BindingPattern,
+  name: string,
+): ts.BindingElement | null {
+  for (const element of pattern.elements) {
+    if (!tsApi.isBindingElement(element)) continue;
+    if (tsApi.isIdentifier(element.name)) {
+      if (element.name.text === name) return element;
+    } else {
+      const found = findBindingElement(tsApi, element.name, name);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
 /**
- * Resolve every identifier inside each symbol to the symbol that
- * declares it, via the TypeChecker. Module symbols only scan their
+ * Resolve every reference inside each symbol to the symbol that
+ * declares it, via the TypeChecker: ordinary and private identifiers,
+ * literal element accesses (`cart["total"]`), destructured binding
+ * targets, and identifiers in decorators and heritage clauses (owned
+ * by the class symbol). Module symbols only scan their
  * leftover-statement slices. Imported assets become edges from the
  * importing file's module symbol and from any symbol referencing an
  * imported binding whose declaration cannot be resolved to app code.
@@ -737,12 +977,26 @@ function computeReferences(
   const moduleByFile = new Map<string, SymbolRecord>();
   for (const s of symbols) if (s.kind === "module") moduleByFile.set(s.file, s);
 
-  const declarationSymbol = (decl: ts.Declaration): SymbolRecord | null => {
+  const declarationSymbol = (
+    decl: ts.Declaration,
+    symbolName?: string,
+  ): SymbolRecord | null => {
     const declFile = decl.getSourceFile();
     const rel = relativePosix(root, declFile.fileName);
     if (rel === null || !isIndexablePath(rel)) return null;
-    const start = decl.getStart(declFile);
-    const end = decl.getEnd();
+    // A checker declaration for one destructured binding may be the
+    // whole shared VariableDeclaration; narrow it to the element that
+    // binds this symbol so containment finds the per-binding symbol.
+    let rangeNode: ts.Node = decl;
+    if (
+      tsApi.isVariableDeclaration(decl) &&
+      !tsApi.isIdentifier(decl.name) &&
+      symbolName !== undefined
+    ) {
+      rangeNode = findBindingElement(tsApi, decl.name, symbolName) ?? decl;
+    }
+    const start = rangeNode.getStart(declFile);
+    const end = rangeNode.getEnd();
     return (
       smallestContaining(symbolsByFile, rel, start, end) ??
       smallestContaining(symbolsByFile, rel, start, start + 1) ??
@@ -751,14 +1005,13 @@ function computeReferences(
     );
   };
 
-  const resolveIdentifier = (id: ts.Identifier, fromRel: string): SymbolRecord | null => {
-    let sym: ts.Symbol | undefined;
-    try {
-      sym = checker.getSymbolAtLocation(id);
-    } catch {
-      return null;
-    }
-    if (sym === undefined) return null;
+  /**
+   * Map a checker symbol to its declaring symbol record, preferring a
+   * real declaration over the module fallback (overload signatures
+   * and type-only declarations have no symbol and would otherwise
+   * shadow the implementation declaration that follows them).
+   */
+  const symbolToRecord = (sym: ts.Symbol): SymbolRecord | null => {
     let target = sym;
     try {
       if ((sym.flags & tsApi.SymbolFlags.Alias) !== 0) {
@@ -767,10 +1020,29 @@ function computeReferences(
     } catch {
       target = sym;
     }
+    let fallback: SymbolRecord | null = null;
     for (const decl of target.declarations ?? []) {
-      const found = declarationSymbol(decl);
-      if (found !== null) return found;
+      const found = declarationSymbol(decl, target.name);
+      if (found === null) continue;
+      if (found.kind !== "module") return found;
+      fallback ??= found;
     }
+    return fallback;
+  };
+
+  const resolveIdentifier = (
+    id: ts.Identifier | ts.PrivateIdentifier,
+    fromRel: string,
+  ): SymbolRecord | null => {
+    let sym: ts.Symbol | undefined;
+    try {
+      sym = checker.getSymbolAtLocation(id);
+    } catch {
+      return null;
+    }
+    if (sym === undefined) return null;
+    const found = symbolToRecord(sym);
+    if (found !== null && found.kind !== "module") return found;
     // Unresolved declaration (e.g. a JSON import binding): fall back to
     // the original symbol's declarations, then to an asset edge keyed
     // by the import specifier in the referring file.
@@ -796,7 +1068,54 @@ function computeReferences(
         }
       }
     }
-    return null;
+    return found;
+  };
+
+  /** Resolve `obj["prop"]` / `obj[0]` to the accessed property's symbol. */
+  const resolveLiteralAccess = (node: ts.ElementAccessExpression): SymbolRecord | null => {
+    const arg = node.argumentExpression;
+    if (
+      !tsApi.isStringLiteral(arg) &&
+      !tsApi.isNumericLiteral(arg) &&
+      !tsApi.isNoSubstitutionTemplateLiteral(arg)
+    ) {
+      return null;
+    }
+    try {
+      const objectType = checker.getTypeAtLocation(node.expression);
+      const prop = checker.getPropertyOfType(objectType, arg.text);
+      return prop === undefined ? null : symbolToRecord(prop);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Resolve one object-destructuring element to the property it reads:
+   * `const { taxRate } = settings` links the `taxRate` binding to the
+   * `settings.taxRate` declaration. Nested patterns resolve through
+   * the ordinary identifier edges instead.
+   */
+  const resolveBindingElement = (element: ts.BindingElement): SymbolRecord | null => {
+    const pattern = element.parent;
+    if (!tsApi.isObjectBindingPattern(pattern)) return null;
+    const propertyName = element.propertyName ?? element.name;
+    if (
+      !tsApi.isIdentifier(propertyName) &&
+      !tsApi.isStringLiteral(propertyName) &&
+      !tsApi.isNumericLiteral(propertyName)
+    ) {
+      return null;
+    }
+    const decl = pattern.parent;
+    if (!tsApi.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
+    try {
+      const sourceType = checker.getTypeAtLocation(decl.initializer);
+      const prop = checker.getPropertyOfType(sourceType, propertyName.text);
+      return prop === undefined ? null : symbolToRecord(prop);
+    } catch {
+      return null;
+    }
   };
 
   for (const [rel, sourceFile] of sourceFilesByRel) {
@@ -811,25 +1130,35 @@ function computeReferences(
       return moduleByFile.get(rel) ?? null;
     };
 
+    const addEdge = (node: ts.Node, target: SymbolRecord | null): void => {
+      if (target === null) return;
+      const owner = attribute(node);
+      if (owner !== null && target.id !== owner.id) {
+        refsBySymbol.get(owner.id)?.add(target.id);
+      }
+    };
+
     const visit = (node: ts.Node): void => {
       // Import/export binding names are not uses; usage identifiers
       // inside symbols carry the real edges. Descending here would
       // attribute every imported declaration to the module symbol.
       if (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) return;
-      if (tsApi.isIdentifier(node)) {
+      // Decorators are not reliably reached through forEachChild.
+      if (tsApi.canHaveDecorators(node)) {
+        for (const decorator of tsApi.getDecorators(node) ?? []) visit(decorator);
+      }
+      if (tsApi.isIdentifier(node) || tsApi.isPrivateIdentifier(node)) {
         // Declaration names and property names that bind are handled by
         // resolution returning the symbol itself; self-edges dropped.
-        const owner = attribute(node);
-        if (owner !== null) {
-          // Module owners only claim identifiers inside leftover slices;
-          // identifiers inside a named symbol were owned above. A node
-          // attributed to module is by construction outside every
-          // smaller symbol, which matches the leftover definition.
-          const target = resolveIdentifier(node, rel);
-          if (target !== null && target.id !== owner.id) {
-            refsBySymbol.get(owner.id)?.add(target.id);
-          }
-        }
+        // Module owners only claim identifiers inside leftover slices;
+        // identifiers inside a named symbol were owned above. A node
+        // attributed to module is by construction outside every
+        // smaller symbol, which matches the leftover definition.
+        addEdge(node, resolveIdentifier(node, rel));
+      } else if (tsApi.isElementAccessExpression(node)) {
+        addEdge(node, resolveLiteralAccess(node));
+      } else if (tsApi.isBindingElement(node)) {
+        addEdge(node, resolveBindingElement(node));
       }
       tsApi.forEachChild(node, visit);
     };
@@ -896,6 +1225,13 @@ function hasModifier(
   return (tsApi.getModifiers(node) ?? []).some((m) => m.kind === kind);
 }
 
+/**
+ * Stable text for a member name, or null when the name is not
+ * statically known. Computed names qualify only in statically known
+ * forms (string/numeric/template literals, `Symbol.<name>`); anything
+ * else stays unnamed and its execution attributes through the
+ * enclosing symbol or the module fallback.
+ */
 function memberName(
   tsApi: typeof ts,
   name: ts.PropertyName | undefined,
@@ -904,11 +1240,30 @@ function memberName(
   if (
     tsApi.isIdentifier(name) ||
     tsApi.isStringLiteral(name) ||
-    tsApi.isNumericLiteral(name)
+    tsApi.isNumericLiteral(name) ||
+    tsApi.isPrivateIdentifier(name)
   ) {
     return name.text;
   }
-  return null; // computed names have no stable qualified name
+  if (tsApi.isComputedPropertyName(name)) {
+    const expr = unwrapExpression(tsApi, name.expression);
+    if (
+      tsApi.isStringLiteral(expr) ||
+      tsApi.isNumericLiteral(expr) ||
+      tsApi.isNoSubstitutionTemplateLiteral(expr)
+    ) {
+      return expr.text;
+    }
+    if (
+      tsApi.isPropertyAccessExpression(expr) &&
+      tsApi.isIdentifier(expr.expression) &&
+      expr.expression.text === "Symbol" &&
+      tsApi.isIdentifier(expr.name)
+    ) {
+      return `Symbol.${expr.name.text}`;
+    }
+  }
+  return null;
 }
 
 function unwrapExpression(

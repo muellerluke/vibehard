@@ -1,7 +1,7 @@
 import type { SymbolId, SymbolRecord } from "../index.js";
 
 /** How a symbol entered a test's touched set. */
-export type TouchKind = "direct" | "referenced" | "module" | "asset";
+export type TouchKind = "direct" | "referenced" | "module" | "class" | "asset";
 
 /** A test's touched set: symbol ID -> how it was touched. */
 export type TouchedSet = Record<SymbolId, TouchKind>;
@@ -14,10 +14,12 @@ function kindFor(record: SymbolRecord, fallback: TouchKind): TouchKind {
 
 /**
  * Compute the full touched set for one test: directly observed symbols,
- * the module symbol of every file containing an observed symbol, and
- * the static-reference closure of those seeds. The closure only ever
- * adds value/module/asset symbols, transitively; executables enter
- * solely by being observed running.
+ * the module symbol of every file containing an observed symbol, the
+ * class symbol of every class containing a touched symbol (so header
+ * edits — extends, decorators — select tests that only ran members),
+ * and the static-reference closure of those seeds. The closure only
+ * ever adds value/module/asset symbols, transitively; executables
+ * enter solely by being observed running.
  */
 export function computeTouchedSet(
   observed: readonly SymbolId[],
@@ -26,6 +28,13 @@ export function computeTouchedSet(
   const byId = new Map(symbols.map((s) => [s.id, s]));
   const moduleByFile = new Map<string, SymbolRecord>();
   for (const s of symbols) if (s.kind === "module") moduleByFile.set(s.file, s);
+  const classesByFile = new Map<string, SymbolRecord[]>();
+  for (const s of symbols) {
+    if (s.kind !== "class") continue;
+    const list = classesByFile.get(s.file) ?? [];
+    list.push(s);
+    classesByFile.set(s.file, list);
+  }
 
   const touched = new Map<SymbolId, TouchKind>();
   const expandable: SymbolRecord[] = [];
@@ -39,12 +48,23 @@ export function computeTouchedSet(
     }
   };
 
+  /** Add every class symbol whose range strictly contains `record`. */
+  const addContainingClasses = (record: SymbolRecord): void => {
+    for (const cls of classesByFile.get(record.file) ?? []) {
+      if (cls.id === record.id) continue;
+      if (cls.startOffset <= record.startOffset && record.endOffset <= cls.endOffset) {
+        add(cls, "class", true);
+      }
+    }
+  };
+
   for (const id of observed) {
     const record = byId.get(id);
     if (record === undefined) continue;
     add(record, kindFor(record, "direct"), true);
     const mod = moduleByFile.get(record.file);
     if (mod !== undefined && mod.id !== record.id) add(mod, "module", true);
+    addContainingClasses(record);
   }
 
   const EXECUTABLE: ReadonlySet<string> = new Set([
@@ -79,6 +99,7 @@ export function computeTouchedSet(
       add(target, kindFor(target, "referenced"), expand);
       const mod = moduleByFile.get(target.file);
       if (mod !== undefined && !touched.has(mod.id)) add(mod, "module", true);
+      addContainingClasses(target);
     }
   }
 

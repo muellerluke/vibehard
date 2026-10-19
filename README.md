@@ -4,10 +4,13 @@ Exact e2e test selection via automatically recorded, machine-verified
 symbol mapping. See [MANIFEST.md](MANIFEST.md) for the product spec.
 
 You never declare what a test touches. `vibehard record` runs each test
-under coverage and records every symbol it touched — functions it ran,
-top-level constants and module code those functions reference, and
-imported data files — with per-symbol source hashes in
-`vibehard.lock.json` (committed to git). `vibehard test` diffs your
+under coverage and records every symbol it touched — functions and class
+members it ran (including computed, `#private`, namespace, and
+factory-returned methods), the classes and top-level constants and module
+code those functions reference, and imported data files — with per-symbol
+source hashes in `vibehard.lock.json` (committed to git). Executed code
+that no named symbol encloses counts at enclosing-class or whole-file
+precision rather than being skipped. `vibehard test` diffs your
 change against a base revision, maps changed lines to changed symbols,
 and runs exactly the tests whose recorded touched set intersects them.
 

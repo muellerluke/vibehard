@@ -106,8 +106,15 @@ export function observeIstanbul(
     }
   }
   const mapped = mapRangesToSymbols(ranges, options.symbols);
+  if (mapped.moduleFallbackRanges > 0) {
+    diagnostics.push(
+      `attributed ${mapped.moduleFallbackRanges} executed range(s) outside every named symbol to the file module symbol`,
+    );
+  }
   if (mapped.ignoredRanges > 0) {
-    diagnostics.push(`ignored ${mapped.ignoredRanges} executed range(s) outside every named symbol`);
+    diagnostics.push(
+      `ignored ${mapped.ignoredRanges} executed range(s) in files with no indexed symbols`,
+    );
   }
   return {
     ok: unmappable.length === 0,

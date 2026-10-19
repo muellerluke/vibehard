@@ -5,7 +5,7 @@
     "version": "1.59.0"
   },
   "configHash": "dbd75508a69dd861c67a17a67c8a3779fca286bf73cd339ac4586a6e6121348b",
-  "graphVersion": 2,
+  "graphVersion": 3,
   "tests": {
     "e2e/app.spec.ts::home page prices, counts, and saves a note": {
       "file": "e2e/app.spec.ts",
