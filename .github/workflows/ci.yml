@@ -27,7 +27,8 @@ jobs:
         run: >-
           npx vitest run
           test/cli.test.ts test/config.test.ts test/touched.test.ts
-          test/indexer.test.ts test/init.test.ts test/observer.test.ts
+          test/indexer.test.ts test/ast-forms.test.ts test/init.test.ts
+          test/observer.test.ts
           test/playwright-adapter.test.ts test/puppeteer-adapter.test.ts
       - run: npx vibehard --help
   examples:
@@ -51,6 +52,9 @@ jobs:
           - name: next-cypress
             files: test/next-cypress.test.ts
             browsers: cypress
+          - name: two-frontends
+            files: test/two-frontends.test.ts
+            browsers: playwright
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

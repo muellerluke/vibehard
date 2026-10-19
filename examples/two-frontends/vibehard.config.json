@@ -1,0 +1,24 @@
+{
+  "framework": "playwright",
+  "app": {
+    "command": "node",
+    "args": [".build/store-server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": { "PORT": "{port}", "STORE_CLIENT_BUNDLE": ".build/store-client.mjs" }
+  },
+  "servers": [
+    {
+      "name": "admin",
+      "command": "node",
+      "args": [".build/admin-server.mjs"],
+      "url": "http://127.0.0.1:{port}",
+      "env": { "PORT": "{port}", "ADMIN_CLIENT_BUNDLE": ".build/admin-client.mjs" }
+    }
+  ],
+  "testDir": "e2e",
+  "playwright": { "project": "chromium" },
+  "generatedScripts": [
+    { "urlEndsWith": "/store-client.js", "path": ".build/store-client.mjs" },
+    { "urlEndsWith": "/admin-client.js", "path": ".build/admin-client.mjs" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "two-frontends",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vibehard": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.0",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.27.7",
+    "typescript": "^5.7.2"
+  }
+}

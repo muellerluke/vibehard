@@ -45,6 +45,11 @@ Target app shapes (all must work):
   Node HTTP): two processes, coverage collected from both and merged per test.
 - Non-Next.js Node.js apps (bundled or plain-HTML frontend plus a Node
   backend) through the framework-agnostic core, proven by one fixture.
+- Multiple frontends and backends in one project tree: one frontend is
+  the `app` entry (the framework base URL), every further frontend or
+  backend is a labeled `servers` entry visited by absolute URL; all are
+  started per test under coverage and merged into one lockfile, proven
+  by `examples/two-frontends`.
 
 ## Success Criteria
 
@@ -311,10 +316,16 @@ reason printed. Machine-readable `--json` on every command.
   `verify`/`record` reject it with that reason. `{port}` in an entry's
   command/args/env/url is that entry's assigned port; `{port:<name>}`
   is another entry's.
-- `servers`: optional extra labeled Node processes (separate backend
-  shape), started in order before `app`; each gets its own port and a
+- `servers`: optional extra labeled Node processes (separate backends
+  or additional frontends — internally `app` is just the entry named
+  `app`, whose only privileges are becoming the framework base URL via
+  `VIBEHARD_BASE_URL` and the `external` escape hatch), started in
+  order before `app`; each gets its own port and a
   `VIBEHARD_<NAME>_URL` env export for specs, and its coverage merges
-  into every test's observed set.
+  into every test's observed set. Additional frontends are navigated
+  to by absolute URL, since Playwright/Cypress have a single base URL.
+  All processes must be Node processes Vibehard starts itself, with
+  their source under the one indexed project root.
 - `include` / `ignore`: globs bounding app source that counts as symbols.
 - `baseBranch`, `testDir`, `lockfile` path overrides.
 - `fallback`: `'full'` (default, only v1 value) for unsafe selection.
@@ -335,6 +346,7 @@ examples/
   next-express/               Next.js frontend + Express API, Playwright
   plain-puppeteer/            plain frontend + Node API, Puppeteer adapter
   next-cypress/               Next.js + Cypress adapter (stage 6)
+  two-frontends/              two browser frontends in one project, Playwright
 fixtures/                     tiny synthetic apps for fast package tests
   tiny-app/                   two pages, three symbols, known ground truth
 ```
@@ -508,6 +520,11 @@ App shapes:
   not select API-only tests.
 - AT-21: Next.js running with its production build (not only `dev`) still
   maps coverage through source maps to the same symbol sets.
+- AT-29: `examples/two-frontends` — one test crossing two browser
+  frontends records browser and server symbols from both into one
+  touched set; a store-only change selects the store and journey
+  tests, an admin-only change the admin and journey tests, and a
+  shared change every test.
 
 Adapters:
 

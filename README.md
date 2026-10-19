@@ -136,6 +136,20 @@ Working examples with recorded lockfiles committed in `examples/`:
   (`{port}` is its own, `{port:api}` is another server's), exports
   `VIBEHARD_<NAME>_URL` to specs, and merges coverage from every process —
   including workers the servers spawn themselves.
+- `examples/two-frontends` — two browser frontends (a store and an
+  admin UI, each with its own server and bundle) in one project and one
+  lockfile. There is only one `app` because Playwright/Cypress have a
+  single base URL: the `app` entry becomes it, and every additional
+  frontend is just another labeled `servers` entry — started fresh per
+  test under coverage like any backend, and visited by absolute URL via
+  its `VIBEHARD_<NAME>_URL`. A test that crosses both frontends records
+  browser and server symbols from both into one touched set; a change
+  in shared code selects tests of every frontend that touched it. The
+  requirements are the same as for extra backends: Node processes
+  Vibehard starts itself, sources under the one project root, and
+  builds with source maps. Note every started server's boot code runs
+  for every test, so an idle frontend contributes its server-startup
+  symbols (not its pages) to other frontends' tests.
 
 Things that matter in a Next.js project:
 
