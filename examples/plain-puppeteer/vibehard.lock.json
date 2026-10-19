@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "framework": {
+    "name": "puppeteer",
+    "version": "24.43.1"
+  },
+  "configHash": "cff18691a3324bba7a674c6fb64a875646d44deb057a4bf216fa9a944b090723",
+  "tests": {
+    "e2e/app.test.mjs::home page shows the cart total": {
+      "file": "e2e/app.test.mjs",
+      "titlePath": [
+        "home page shows the cart total"
+      ],
+      "declared": [
+        "src/lib/cart.ts#Cart.addItem",
+        "src/lib/cart.ts#Cart.totalCents",
+        "src/lib/pricing.ts#formatPrice",
+        "src/page.ts#renderHome",
+        "src/server.ts#routeRequest"
+      ],
+      "symbolHashes": {
+        "src/lib/cart.ts#Cart.addItem": "da80fc7a449970beaf45a1d084221517c02006d0aa30b30d32eab93cbaee867c",
+        "src/lib/cart.ts#Cart.totalCents": "b66cb82df764a7b9faae5252202a16a3d8138a8323cb83fc90d440e59df72c5e",
+        "src/lib/pricing.ts#formatPrice": "7cf4338bc863f7b1044859cf5a427c551062722d40d7a96306b0276c9ca30750",
+        "src/page.ts#renderHome": "e9b8c5bcd72805658a03d7c4541d164ee76a5997442eb2138d3e04ee0b8c82bf",
+        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    },
+    "e2e/app.test.mjs::price api applies a discount": {
+      "file": "e2e/app.test.mjs",
+      "titlePath": [
+        "price api applies a discount"
+      ],
+      "declared": [
+        "src/api.ts#priceHandler",
+        "src/lib/pricing.ts#applyDiscount",
+        "src/lib/pricing.ts#formatPrice",
+        "src/server.ts#routeRequest"
+      ],
+      "symbolHashes": {
+        "src/api.ts#priceHandler": "fe79b5cee1f488c44cee6f5684a343eea21919191dbc950f4e1b5d6a4ce1fd94",
+        "src/lib/pricing.ts#applyDiscount": "bae4fbd6567d8fc65bcae2bef5d2835c9a6a35daf42a2f71d789e33f98a60979",
+        "src/lib/pricing.ts#formatPrice": "7cf4338bc863f7b1044859cf5a427c551062722d40d7a96306b0276c9ca30750",
+        "src/server.ts#routeRequest": "e8063b3c83f2595bba7c5eaa14d270fee69611081c21f4b6c8c21ccfb40fc3dd"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    }
+  }
+}

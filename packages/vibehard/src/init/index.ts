@@ -11,7 +11,7 @@ export interface InitProjectOptions {
 }
 
 export interface InitDetection {
-  framework: "playwright";
+  framework: "playwright" | "puppeteer" | "cypress";
   /** "next" when the `next` dependency is present, else "generic". */
   appShape: "next" | "generic";
   next: { appRouter: boolean; pagesRouter: boolean } | null;
@@ -64,43 +64,51 @@ function isDir(root: string, rel: string): boolean {
   }
 }
 
-function detectTestDir(root: string): string {
-  for (const name of ["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]) {
-    const file = path.join(root, name);
-    if (!existsSync(file)) continue;
-    const text = readFileSync(file, "utf8");
-    const match = /testDir:\s*["']([^"']+)["']/.exec(text);
-    if (match?.[1] !== undefined) {
-      return match[1].replace(/^\.\//, "").replace(/\/$/, "");
+function detectTestDir(root: string, framework: InitDetection["framework"]): string {
+  if (framework === "playwright") {
+    for (const name of ["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]) {
+      const file = path.join(root, name);
+      if (!existsSync(file)) continue;
+      const text = readFileSync(file, "utf8");
+      const match = /testDir:\s*["']([^"']+)["']/.exec(text);
+      if (match?.[1] !== undefined) {
+        return match[1].replace(/^\.\//, "").replace(/\/$/, "");
+      }
     }
   }
-  for (const candidate of ["e2e", "tests", "test"]) {
+  const candidates =
+    framework === "cypress" ? ["cypress/e2e", "e2e", "tests"] : ["e2e", "tests", "test"];
+  for (const candidate of candidates) {
     if (isDir(root, candidate)) return candidate;
   }
-  return "e2e";
+  return framework === "cypress" ? "cypress/e2e" : "e2e";
 }
+
+const FRAMEWORK_LABEL: Record<InitDetection["framework"], string> = {
+  playwright: "Playwright",
+  puppeteer: "Puppeteer",
+  cypress: "Cypress",
+};
 
 function detect(root: string, pkg: PackageJson): InitDetection {
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   const has = (name: string): boolean => deps[name] !== undefined;
-  if (!has("@playwright/test") && !has("playwright")) {
-    if (has("puppeteer") || has("puppeteer-core")) {
-      throw new VibehardUsageError(
-        "vibehard init: Puppeteer detected, but the Puppeteer adapter lands in Stage 6 (Playwright only for now)",
-      );
-    }
-    if (has("cypress")) {
-      throw new VibehardUsageError(
-        "vibehard init: Cypress detected, but the Cypress adapter lands in Stage 6 (Playwright only for now)",
-      );
-    }
+  const framework: InitDetection["framework"] | null =
+    has("@playwright/test") || has("playwright")
+      ? "playwright"
+      : has("puppeteer") || has("puppeteer-core")
+        ? "puppeteer"
+        : has("cypress")
+          ? "cypress"
+          : null;
+  if (framework === null) {
     throw new VibehardUsageError(
-      "vibehard init: no e2e framework found in package.json (install @playwright/test first; Puppeteer/Cypress land in Stage 6)",
+      "vibehard init: no e2e framework found in package.json (install @playwright/test, puppeteer, or cypress first)",
     );
   }
   const isNext = has("next");
   return {
-    framework: "playwright",
+    framework,
     appShape: isNext ? "next" : "generic",
     next: isNext
       ? {
@@ -109,15 +117,17 @@ function detect(root: string, pkg: PackageJson): InitDetection {
         }
       : null,
     express: has("express"),
-    testDir: detectTestDir(root),
+    testDir: detectTestDir(root, framework),
   };
 }
 
 function buildConfig(detection: InitDetection): VibehardConfig {
   const config: VibehardConfig = {
-    framework: "playwright",
+    framework: detection.framework,
     testDir: detection.testDir,
-    playwright: { project: "chromium" },
+    ...(detection.framework === "playwright"
+      ? { playwright: { project: "chromium" } }
+      : {}),
   };
   if (detection.appShape === "next") {
     config.app = {
@@ -154,22 +164,35 @@ function buildConfig(detection: InitDetection): VibehardConfig {
 }
 
 function buildInstructions(detection: InitDetection, configRel: string): string[] {
-  const steps: string[] = [
-    `Wrote ${configRel}. Review it, then finish the wiring:`,
-    "1. In your specs, import { test, expect } from 'vibehard/playwright' instead of '@playwright/test'. Existing test bodies stay unchanged; plain `playwright test` runs are unaffected.",
-    "2. In playwright.config, set use.baseURL to process.env['VIBEHARD_BASE_URL'] ?? '<your usual dev url>' so vibehard can point tests at the server it starts.",
-  ];
-  if (detection.appShape === "next") {
+  const steps: string[] = [`Wrote ${configRel}. Review it, then finish the wiring:`];
+  if (detection.framework === "playwright") {
     steps.push(
-      "3. In next.config, set productionBrowserSourceMaps: true. Vibehard verifies against the production build (next build, then the app command runs next start); without browser source maps it fails closed. Dev-server (next dev) output is not verifiable.",
-      "4. Routes must render per request to be observed: prerendered (static) routes execute at build time, not during tests. Add export const dynamic = 'force-dynamic' (App Router) or getServerSideProps (Pages Router) to routes under test.",
-      "5. If this project is an npm-workspaces member with hoisted dependencies, node_modules/next may live at the workspace root: point app.args at the real next bin (or a small resolver script), keeping `node` as the direct parent so coverage flushes on shutdown. An existing instrumentation.ts register() is left untouched; Vibehard does not need it.",
-      "6. Build once (next build), then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
+      "1. In your specs, import { test, expect } from 'vibehard/playwright' instead of '@playwright/test'. Existing test bodies stay unchanged; plain `playwright test` runs are unaffected.",
+      "2. In playwright.config, set use.baseURL to process.env['VIBEHARD_BASE_URL'] ?? '<your usual dev url>' so vibehard can point tests at the server it starts.",
+    );
+  } else if (detection.framework === "puppeteer") {
+    steps.push(
+      "1. In your specs (Node's built-in test runner is the host), register tests with describeTest from 'vibehard/puppeteer' and open pages with withVibehardPage(browser) so coverage starts before navigation. Existing test bodies stay unchanged; plain `node --test` runs are unaffected.",
+      "2. Read the app origin from process.env['VIBEHARD_BASE_URL'] ?? '<your usual dev url>' so vibehard can point tests at the server it starts. Test leaf titles must be unique per file (single tests are selected by title).",
     );
   } else {
     steps.push(
-      "3. Replace the TODO app.command in the config with your production app start (built with source maps end to end; unmapped executed code fails verification closed). Use {port} where the assigned port belongs.",
-      "4. Build your app, then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
+      "1. In cypress/support/e2e, import { registerVibehardSupport } from 'vibehard/cypress' and call it. In cypress.config setupNodeEvents, call registerVibehardTasks(on) from 'vibehard/cypress/node'. Declare sets with uses([...]) as the first statement of each test (import { uses } from 'vibehard/cypress'). Plain `cypress run` is unaffected.",
+      "2. Set e2e.baseUrl to process.env['VIBEHARD_BASE_URL'] ?? '<your usual dev url>' in cypress.config so vibehard can point tests at the server it starts.",
+      "3. Instrument the app build with Istanbul (e.g. babel-plugin-istanbul or nyc) so window.__coverage__ exists in the browser — Cypress has no V8 range API, and a visited page without it fails verification closed. For Next.js, copy the examples/next-cypress setup (.babelrc env + `next build --webpack` + forced server source maps).",
+    );
+  }
+  if (detection.appShape === "next") {
+    steps.push(
+      "- In next.config, set productionBrowserSourceMaps: true. Vibehard verifies against the production build (next build, then the app command runs next start); without browser source maps it fails closed. Dev-server (next dev) output is not verifiable.",
+      "- Routes must render per request to be observed: prerendered (static) routes execute at build time, not during tests. Add export const dynamic = 'force-dynamic' (App Router) or getServerSideProps (Pages Router) to routes under test.",
+      "- If this project is an npm-workspaces member with hoisted dependencies, node_modules/next may live at the workspace root: point app.args at the real next bin (or a small resolver script), keeping `node` as the direct parent so coverage flushes on shutdown. An existing instrumentation.ts register() is left untouched; Vibehard does not need it.",
+      "- Build once (next build), then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
+    );
+  } else {
+    steps.push(
+      "- Replace the TODO app.command in the config with your production app start (built with source maps end to end; unmapped executed code fails verification closed). Use {port} where the assigned port belongs.",
+      "- Build your app, then run `vibehard record` to generate declarations, review the diff, and commit the specs plus vibehard.lock.json.",
     );
   }
   if (detection.express) {
@@ -178,7 +201,9 @@ function buildInstructions(detection: InitDetection, configRel: string): string[
     );
   }
   steps.push(
-    "If Playwright's own webServer already starts your app, set app.external: true and a literal app.url: `vibehard test` selection works with it, but verify/record still need Vibehard to start the app (per-test coverage windows).",
+    detection.framework === "playwright"
+      ? "If Playwright's own webServer already starts your app, set app.external: true and a literal app.url: `vibehard test` selection works with it, but verify/record still need Vibehard to start the app (per-test coverage windows)."
+      : "If your own test setup already starts the app, set app.external: true and a literal app.url: `vibehard test` selection works with it, but verify/record still need Vibehard to start the app (per-test coverage windows).",
   );
   return steps;
 }
@@ -247,7 +272,7 @@ export function formatInitReport(result: InitProjectResult): string {
             .join(" + ") || "no app/pages dir found"})`
         : "generic app";
     lines.push(
-      `vibehard init: detected Playwright + ${shape}${d.express ? " + Express backend" : ""}; testDir "${d.testDir}"`,
+      `vibehard init: detected ${FRAMEWORK_LABEL[d.framework]} + ${shape}${d.express ? " + Express backend" : ""}; testDir "${d.testDir}"`,
     );
     lines.push(`wrote ${result.configPath}`);
   }

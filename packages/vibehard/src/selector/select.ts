@@ -4,13 +4,14 @@ import path from "node:path";
 import type { SymbolId, SymbolRecord } from "../index.js";
 import { indexProject } from "../indexer/index.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
+import { getFrameworkDriver } from "../verifier/driver.js";
 import {
+  frameworkVersion,
   hashSymbolSources,
-  playwrightTestVersion,
   readLockfile,
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
-import { listTests, resolvePlaywrightCli, type ListedTest } from "../verifier/playwright-runner.js";
+import type { ListedTest } from "../verifier/listed.js";
 import {
   classifyChangedFile,
   computeChangedSymbolsForFile,
@@ -76,6 +77,9 @@ interface TrustInput {
   lockError: string | null;
   resolved: ResolvedConfig;
   rootDir: string;
+  /** Framework identity to trust; defaults to the config's framework. */
+  frameworkName?: string;
+  frameworkVersion?: string;
   discoveredIds: ReadonlySet<string>;
   baseHashes: Readonly<Record<string, string>>;
   headHashes: Readonly<Record<string, string>>;
@@ -98,13 +102,15 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
   if (input.lock.configHash !== input.resolved.configHash) {
     reasons.push("unsafe: stale lockfile: config hash differs from current config");
   }
-  const frameworkVersion = playwrightTestVersion(input.rootDir);
+  const expectedName = input.frameworkName ?? input.resolved.config?.framework ?? "playwright";
+  const expectedVersion =
+    input.frameworkVersion ?? frameworkVersion(input.rootDir, expectedName);
   if (
-    input.lock.framework.name !== "playwright" ||
-    input.lock.framework.version !== frameworkVersion
+    input.lock.framework.name !== expectedName ||
+    input.lock.framework.version !== expectedVersion
   ) {
     reasons.push(
-      `unsafe: stale lockfile: framework ${input.lock.framework.name}@${input.lock.framework.version} differs from playwright@${frameworkVersion}`,
+      `unsafe: stale lockfile: framework ${input.lock.framework.name}@${input.lock.framework.version} differs from ${expectedName}@${expectedVersion}`,
     );
   }
   let allBase = true;
@@ -150,8 +156,8 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
     if (key !== null) patchByFile.set(key, patch);
   }
 
-  const cliPath = resolvePlaywrightCli(rootDir);
-  const discovered = await listTests(rootDir, resolved, cliPath);
+  const driver = getFrameworkDriver(resolved.config.framework);
+  const discovered = await driver.listTests(rootDir, resolved);
   const discoveredIds = new Set(discovered.map((t) => t.testId));
   const specFiles = new Set(discovered.map((t) => t.relFile));
 
@@ -253,6 +259,8 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
       lockError,
       resolved,
       rootDir,
+      frameworkName: driver.name,
+      frameworkVersion: driver.version(rootDir),
       discoveredIds,
       baseHashes,
       headHashes,

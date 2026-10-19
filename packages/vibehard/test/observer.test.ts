@@ -20,6 +20,7 @@ import {
   executedFunctionRanges,
   indexProject,
   mapRangesToSymbols,
+  observeIstanbul,
   observeScripts,
   parseNodeCoverageDir,
   runNodeWithCoverage,
@@ -598,4 +599,97 @@ describe("AT-05/AT-06: tiny-app page load (Chromium + Node server)", () => {
     expect(byOrigin.get("server")?.reason).toContain("no source map");
     expect(result.merged).toEqual([]);
   }, TIMEOUT);
+});
+
+describe("Istanbul observation (Cypress path)", () => {
+  let symbols: IndexResult["symbols"];
+  beforeAll(async () => {
+    symbols = (await indexProject(TINY_APP)).symbols;
+  });
+  const formatAbs = path.join(TINY_APP, "src/lib/format.ts");
+  const coverageFor = (fCount: number) => ({
+    [formatAbs]: {
+      path: formatAbs,
+      statementMap: {
+        "0": { start: { line: 1, column: 13 }, end: { line: 3, column: 1 } },
+      },
+      fnMap: {
+        "0": {
+          name: "formatPrice",
+          decl: { start: { line: 1, column: 13 }, end: { line: 1, column: 24 } },
+          loc: { start: { line: 1, column: 13 }, end: { line: 3, column: 1 } },
+        },
+      },
+      branchMap: {},
+      s: { "0": fCount },
+      f: { "0": fCount },
+      b: {},
+    },
+  });
+
+  it("maps executed Istanbul locations to symbols in original coordinates", () => {
+    const result = observeIstanbul(coverageFor(3), { rootDir: TINY_APP, symbols });
+    expect(result.ok).toBe(true);
+    expect(result.client).toEqual(["src/lib/format.ts#formatPrice"]);
+    expect(result.merged).toEqual(["src/lib/format.ts#formatPrice"]);
+  });
+
+  it("zero counters observe nothing; empty object is a no-client test", () => {
+    expect(observeIstanbul(coverageFor(0), { rootDir: TINY_APP, symbols }).merged).toEqual([]);
+    const empty = observeIstanbul({}, { rootDir: TINY_APP, symbols });
+    expect(empty.ok).toBe(true);
+    expect(empty.merged).toEqual([]);
+  });
+
+  it("remaps webpack:// map sources root-relative (Stage 6 server chunks)", () => {
+    const format = symbols.find((x) => x.id === "src/lib/format.ts#formatPrice");
+    expect(format).toBeDefined();
+    if (format === undefined) return;
+    const generated = "function e(a){return \"$\"+(a/100).toFixed(2)}e(1);\n";
+    const formatText = readFileSync(path.join(TINY_APP, "src/lib/format.ts"), "utf8");
+    const startColumn =
+      format.startOffset - (formatText.lastIndexOf("\n", format.startOffset - 1) + 1);
+    const map = new GenMapping({ file: "page.js" });
+    addMapping(map, {
+      generated: { line: 1, column: 0 },
+      source: "webpack://next-cypress/./src/lib/format.ts",
+      original: { line: format.startLine, column: startColumn },
+    });
+    addMapping(map, {
+      generated: { line: 1, column: generated.indexOf("}e(1)") },
+      source: "webpack://next-cypress/./src/lib/format.ts",
+      original: { line: format.endLine, column: 0 },
+    });
+    const result = observeScripts(
+      [
+        {
+          url: `file://${TINY_APP}/.next/server/app/page.js`,
+          origin: "server",
+          source: generated,
+          sourceMap: toEncodedMap(map),
+          functions: [
+            { functionName: "", ranges: [{ startOffset: 0, endOffset: generated.length, count: 1 }] },
+            {
+              functionName: "e",
+              ranges: [{ startOffset: 0, endOffset: generated.indexOf("}e(1)") + 1, count: 1 }],
+            },
+          ],
+        },
+      ],
+      { rootDir: TINY_APP, symbols },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.merged).toEqual(["src/lib/format.ts#formatPrice"]);
+  });
+
+  it("missing coverage fails closed as unmappable", () => {
+    const missing = observeIstanbul(null, { rootDir: TINY_APP, symbols });
+    expect(missing.ok).toBe(false);
+    expect(missing.unmappable).toHaveLength(1);
+    const ghost = observeIstanbul(
+      { "/nonexistent/app.ts": { path: path.join(TINY_APP, "src/ghost.ts"), statementMap: {}, fnMap: {}, s: {}, f: {} } },
+      { rootDir: TINY_APP, symbols },
+    );
+    expect(ghost.ok).toBe(false);
+  });
 });

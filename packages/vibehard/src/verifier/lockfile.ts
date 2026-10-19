@@ -47,21 +47,44 @@ export function hashSymbolSources(
   return out;
 }
 
-/** Installed `@playwright/test` version for the project, or "unknown". */
-export function playwrightTestVersion(rootDir: string): string {
+const FRAMEWORK_PACKAGES: Record<string, readonly string[]> = {
+  playwright: ["@playwright/test/package.json", "playwright/package.json"],
+  puppeteer: ["puppeteer/package.json", "puppeteer-core/package.json"],
+  cypress: ["cypress/package.json"],
+};
+
+/** Installed framework version for the project, or "unknown". */
+export function frameworkVersion(rootDir: string, framework: string): string {
+  const candidates = FRAMEWORK_PACKAGES[framework] ?? [`${framework}/package.json`];
   try {
     const req = createRequire(path.join(path.resolve(rootDir), "package.json"));
-    const pkg = req("@playwright/test/package.json") as { version?: string };
-    return pkg.version ?? "unknown";
+    for (const candidate of candidates) {
+      try {
+        const pkg = req(candidate) as { version?: string };
+        if (typeof pkg.version === "string" && pkg.version !== "") return pkg.version;
+      } catch {
+        // try the next candidate
+      }
+    }
   } catch {
-    return "unknown";
+    // fall through
   }
+  return "unknown";
 }
 
-export function emptyLockfile(configHash: string, frameworkVersion: string): VibehardLockfile {
+/** Installed `@playwright/test` version for the project, or "unknown". */
+export function playwrightTestVersion(rootDir: string): string {
+  return frameworkVersion(rootDir, "playwright");
+}
+
+export function emptyLockfile(
+  configHash: string,
+  frameworkVersion: string,
+  frameworkName = "playwright",
+): VibehardLockfile {
   return {
     version: 1,
-    framework: { name: "playwright", version: frameworkVersion },
+    framework: { name: frameworkName, version: frameworkVersion },
     configHash,
     tests: {},
   };
@@ -144,6 +167,8 @@ export function checkLockfile(
   input: {
     configHash: string;
     frameworkVersion: string;
+    /** Expected framework name; defaults to "playwright" for compatibility. */
+    frameworkName?: string;
     expectations: readonly LockfileExpectation[];
     /** When true, lockfile tests absent from expectations are drift. */
     fullRun: boolean;
@@ -153,8 +178,9 @@ export function checkLockfile(
   if (lock === null) return ["lockfile missing (run `vibehard record` or `vibehard verify`)"];
   const drift: string[] = [];
   if (lock.configHash !== input.configHash) drift.push("lockfile config hash differs from current config");
-  if (lock.framework.name !== "playwright" || lock.framework.version !== input.frameworkVersion) {
-    drift.push(`lockfile framework ${lock.framework.name}@${lock.framework.version} differs from playwright@${input.frameworkVersion}`);
+  const expectedName = input.frameworkName ?? "playwright";
+  if (lock.framework.name !== expectedName || lock.framework.version !== input.frameworkVersion) {
+    drift.push(`lockfile framework ${lock.framework.name}@${lock.framework.version} differs from ${expectedName}@${input.frameworkVersion}`);
   }
   for (const exp of input.expectations) {
     const entry = lock.tests[exp.testId];

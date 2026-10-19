@@ -9,14 +9,9 @@ import {
   type LockfileTestEntry,
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
-import {
-  listTests,
-  resolvePlaywrightCli,
-  runPlaywrightTests,
-  startServers,
-  type ListedTest,
-  type SpawnCaptureResult,
-} from "../verifier/playwright-runner.js";
+import { getFrameworkDriver, type FrameworkDriver } from "../verifier/driver.js";
+import type { ListedTest, RunnableTestRef } from "../verifier/listed.js";
+import { startServers, type SpawnCaptureResult } from "../verifier/servers.js";
 import { VibehardUsageError } from "../verifier/types.js";
 import { selectTests } from "./select.js";
 import type {
@@ -30,44 +25,29 @@ import type {
   TestProjectResult,
 } from "./types.js";
 
-/** Run Playwright around the config servers, without observation. */
+/** Run the framework around the config servers, without observation. */
 async function runPlain(
   rootDir: string,
   resolved: ResolvedConfig,
-  cliPath: string,
-  positionals: readonly string[],
+  driver: FrameworkDriver,
+  tests: readonly RunnableTestRef[] | null,
 ): Promise<SpawnCaptureResult> {
   const servers = await startServers(resolved);
   try {
-    return await runPlaywrightTests({
-      rootDir,
-      cliPath,
-      resolved,
-      positionals,
-      env: servers.env,
-    });
+    return await driver.runMany({ rootDir, resolved, tests, env: servers.env });
   } finally {
     await servers.stop().catch(() => []);
   }
 }
 
-function fileLines(tests: readonly SelectedTest[]): string[] {
-  return tests.map((t) => `${t.file}:${t.line}`);
-}
-
-/** Prove the file:line filters resolve to exactly the selected tests. */
-async function verifyFilter(
-  rootDir: string,
-  resolved: ResolvedConfig,
-  cliPath: string,
-  selected: readonly SelectedTest[],
-): Promise<string | null> {
-  const listed = await listTests(rootDir, resolved, cliPath, fileLines(selected));
-  const listedIds = listed.map((t) => t.testId).sort();
-  const selectedIds = selected.map((t) => t.testId).sort();
-  return JSON.stringify(listedIds) === JSON.stringify(selectedIds)
-    ? null
-    : `playwright --list resolved [${listedIds.join(", ")}] for selected [${selectedIds.join(", ")}]`;
+function selectedRefs(tests: readonly SelectedTest[]): RunnableTestRef[] {
+  return tests.map((t) => ({
+    testId: t.testId,
+    file: t.file,
+    line: t.line,
+    title: t.title,
+    titlePath: t.titlePath,
+  }));
 }
 
 export async function testProject(options: TestProjectOptions): Promise<TestProjectResult> {
@@ -76,11 +56,11 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
   const dryRun = options.dryRun ?? false;
   const all = options.all ?? false;
   const diagnostics: string[] = [];
-  const cliPath = resolvePlaywrightCli(rootDir);
+  const driver = getFrameworkDriver(resolved.config.framework);
 
   if (all) {
     if (dryRun) {
-      const discovered = await listTests(rootDir, resolved, cliPath);
+      const discovered = await driver.listTests(rootDir, resolved);
       diagnostics.push("--all: selection skipped; the full suite would run");
       return {
         ok: true,
@@ -89,13 +69,13 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
         all,
         rootDir,
         selection: null,
-        ran: { mode: "full", testIds: discovered.map((t) => t.testId), playwrightExitCode: null },
+        ran: { mode: "full", testIds: discovered.map((t) => t.testId), frameworkExitCode: null, playwrightExitCode: null },
         output: null,
         diagnostics,
       };
     }
-    const discovered = await listTests(rootDir, resolved, cliPath);
-    const run = await runPlain(rootDir, resolved, cliPath, []);
+    const discovered = await driver.listTests(rootDir, resolved);
+    const run = await runPlain(rootDir, resolved, driver, null);
     return {
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -103,7 +83,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       all,
       rootDir,
       selection: null,
-      ran: { mode: "full", testIds: discovered.map((t) => t.testId), playwrightExitCode: run.exitCode },
+      ran: { mode: "full", testIds: discovered.map((t) => t.testId), frameworkExitCode: run.exitCode, playwrightExitCode: run.exitCode },
       output: { stdout: run.stdout, stderr: run.stderr },
       diagnostics,
     };
@@ -132,7 +112,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
 
   if (selection.unsafeReasons.length > 0) {
     // Safety falls back to a full run, never to a partial run.
-    const run = await runPlain(rootDir, resolved, cliPath, []);
+    const run = await runPlain(rootDir, resolved, driver, null);
     return {
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -143,6 +123,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       ran: {
         mode: "full",
         testIds: selection.discovered.map((t) => t.testId),
+        frameworkExitCode: run.exitCode,
         playwrightExitCode: run.exitCode,
       },
       output: { stdout: run.stdout, stderr: run.stderr },
@@ -159,16 +140,20 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       all,
       rootDir,
       selection,
-      ran: { mode: "none", testIds: [], playwrightExitCode: null },
+      ran: { mode: "none", testIds: [], frameworkExitCode: null, playwrightExitCode: null },
       output: null,
       diagnostics,
     };
   }
 
-  const filterProblem = await verifyFilter(rootDir, resolved, cliPath, selection.selected);
+  const refs = selectedRefs(selection.selected);
+  const filterProblem =
+    driver.proveFilter === undefined
+      ? null
+      : await driver.proveFilter({ rootDir, resolved, tests: refs });
   if (filterProblem !== null) {
     diagnostics.push(`${filterProblem}; falling back to a full run`);
-    const run = await runPlain(rootDir, resolved, cliPath, []);
+    const run = await runPlain(rootDir, resolved, driver, null);
     return {
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -179,6 +164,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       ran: {
         mode: "full",
         testIds: selection.discovered.map((t) => t.testId),
+        frameworkExitCode: run.exitCode,
         playwrightExitCode: run.exitCode,
       },
       output: { stdout: run.stdout, stderr: run.stderr },
@@ -186,7 +172,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
     };
   }
 
-  const run = await runPlain(rootDir, resolved, cliPath, fileLines(selection.selected));
+  const run = await runPlain(rootDir, resolved, driver, refs);
   return {
     ok: run.exitCode === 0,
     exitCode: run.exitCode === 0 ? 0 : 1,
@@ -197,6 +183,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
     ran: {
       mode: "selected",
       testIds: selection.selected.map((t) => t.testId),
+      frameworkExitCode: run.exitCode,
       playwrightExitCode: run.exitCode,
     },
     output: { stdout: run.stdout, stderr: run.stderr },
@@ -310,7 +297,7 @@ export async function explainProject(options: ExplainOptions): Promise<ExplainRe
   // the same substring semantics as the verifier filter.
   let discovered: ListedTest[] = [];
   try {
-    discovered = await listTests(rootDir, resolved, resolvePlaywrightCli(rootDir));
+    discovered = await getFrameworkDriver(resolved.config.framework).listTests(rootDir, resolved);
   } catch (error) {
     diagnostics.push(
       `could not list tests (${error instanceof Error ? error.message : String(error)}); matching the lockfile only`,
@@ -385,7 +372,7 @@ export function formatTestReport(result: TestProjectResult): string {
       lines.push("no tests selected; nothing ran");
     } else {
       lines.push(
-        `${result.ran.mode} run: ${result.ran.testIds.length} test(s), playwright exit ${result.ran.playwrightExitCode ?? "?"}`,
+        `${result.ran.mode} run: ${result.ran.testIds.length} test(s), framework exit ${result.ran.frameworkExitCode ?? result.ran.playwrightExitCode ?? "?"}`,
       );
     }
   }

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "framework": {
+    "name": "cypress",
+    "version": "14.5.4"
+  },
+  "configHash": "0122b3d423a33fd084e8a633ef7a572a6db14d6ef2bf1565c127adaa9cfbe81f",
+  "tests": {
+    "cypress/e2e/app.cy.js::home page prices, counts, and saves a note": {
+      "file": "cypress/e2e/app.cy.js",
+      "titlePath": [
+        "home page prices, counts, and saves a note"
+      ],
+      "declared": [
+        "src/app/actions.ts#saveNote",
+        "src/app/counter/Counter.tsx#Counter",
+        "src/app/layout.tsx#RootLayout",
+        "src/app/page.tsx#HomePage",
+        "src/lib/notes.ts#normalizeNote",
+        "src/lib/pricing.ts#formatPrice"
+      ],
+      "symbolHashes": {
+        "src/app/actions.ts#saveNote": "1a7e898ebdd6e89a2bd30233542353f2b4aead6dc248bf746b0705acc98025a7",
+        "src/app/counter/Counter.tsx#Counter": "75f2bc5c7f92491f12da6732ffbd45bd2c586504ff80eb499418607aea2a62c4",
+        "src/app/layout.tsx#RootLayout": "937a0bda43b8b52c29c35f0944e6f722370931ddb79624a9bf9a0f5075bfb25b",
+        "src/app/page.tsx#HomePage": "c5603deb8edc33a89eab11f285bd9a8715be4520cef5feae9e9e7bf4a95835c6",
+        "src/lib/notes.ts#normalizeNote": "a796db1fa475fa77921b03800347b2f61dac0893b0a10f8b36391ad6dafb785b",
+        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    },
+    "cypress/e2e/app.cy.js::price api applies a discount": {
+      "file": "cypress/e2e/app.cy.js",
+      "titlePath": [
+        "price api applies a discount"
+      ],
+      "declared": [
+        "src/app/api/price/route.ts#GET",
+        "src/lib/pricing.ts#applyDiscount",
+        "src/lib/pricing.ts#formatPrice"
+      ],
+      "symbolHashes": {
+        "src/app/api/price/route.ts#GET": "06f6cf3e9da4c863fe970f863840dcbe66a1aeaad0b5d4b9ce624f2923d75ef7",
+        "src/lib/pricing.ts#applyDiscount": "e6f9e9a87de5a5c7a174613320a7c1d02d2e82d3244681b4cca71af24cce038c",
+        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298"
+      },
+      "allowTransitive": [],
+      "allowedObserved": []
+    }
+  }
+}

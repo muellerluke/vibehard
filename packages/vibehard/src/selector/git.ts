@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { spawnCapture } from "../verifier/playwright-runner.js";
+import { spawnCapture } from "../verifier/servers.js";
 import { VibehardUsageError } from "../verifier/types.js";
 import type { ResolvedBase } from "./types.js";
 

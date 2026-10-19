@@ -118,19 +118,31 @@ describe("Stage 5: vibehard init detection", () => {
     expect(readFileSync(path.join(dir, "vibehard.config.json"), "utf8")).toBe(existing);
   });
 
-  it("rejects missing package.json, missing framework, and Stage 6 frameworks", () => {
+  it("rejects missing package.json and missing framework", () => {
     const empty = mkdtempSync(path.join(tmpdir(), "vibehard-init-empty-"));
     tempDirs.push(empty);
     expect(() => initProject({ rootDir: empty })).toThrow(/no package\.json/);
 
     const bare = makeProject({ deps: { react: "19.3.1" } });
     expect(() => initProject({ rootDir: bare })).toThrow(/no e2e framework/);
+  });
 
-    const puppeteer = makeProject({ deps: { puppeteer: "^24.0.0" } });
-    expect(() => initProject({ rootDir: puppeteer })).toThrow(/Stage 6/);
+  it("Stage 6: detects Puppeteer and Cypress projects", () => {
+    const pup = makeProject({ deps: { puppeteer: "^24.0.0" }, dirs: ["e2e"] });
+    const pupResult = initProject({ rootDir: pup });
+    expect(pupResult.detection?.framework).toBe("puppeteer");
+    expect(writtenConfig(pup).framework).toBe("puppeteer");
+    expect(pupResult.instructions.join("\n")).toContain("vibehard/puppeteer");
 
-    const cypress = makeProject({ deps: { cypress: "^15.0.0" } });
-    expect(() => initProject({ rootDir: cypress })).toThrow(/Stage 6/);
+    const cy = makeProject({
+      deps: { cypress: "^14.0.0", next: "16.4.2" },
+      dirs: ["src/app", "cypress/e2e"],
+    });
+    const cyResult = initProject({ rootDir: cy });
+    expect(cyResult.detection?.framework).toBe("cypress");
+    expect(cyResult.detection?.testDir).toBe("cypress/e2e");
+    expect(writtenConfig(cy).framework).toBe("cypress");
+    expect(cyResult.instructions.join("\n")).toContain("__coverage__");
   });
 
   it("works through the CLI, including --json and a second already-wired run", async () => {

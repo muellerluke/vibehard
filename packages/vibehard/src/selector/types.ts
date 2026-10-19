@@ -70,6 +70,9 @@ export interface TestProjectResult {
   ran: {
     mode: "selected" | "full" | "none";
     testIds: string[];
+    /** Exit code of the delegated framework run, or null when none ran. */
+    frameworkExitCode: number | null;
+    /** @deprecated Alias of `frameworkExitCode` kept for JSON compatibility. */
     playwrightExitCode: number | null;
   } | null;
   /** Captured framework output when a run happened. */

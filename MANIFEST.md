@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: Stage 0, Stage 1, Stage 2, Stage 3, Stage 4, and Stage 5 complete. Next: Stage 6 (Puppeteer and Cypress adapters).
+Status: Stage 0, Stage 1, Stage 2, Stage 3, Stage 4, Stage 5, and Stage 6 complete. Next: Stage 7 (hardening, performance, release).
 
 ## Goal
 
@@ -518,9 +518,16 @@ Risks, with the designed mitigation:
 
 Open questions (none block Stage 0–2; each names its decision point):
 
-- Puppeteer host runner: support Node's built-in test runner only in v1, or
-  also a third-party runner? Decide at Stage 6 start from the adapter
-  interface's needs; default assumption is Node's built-in runner first.
+- Puppeteer host runner: decided in Stage 6 — Node's built-in test
+  runner only in v1 (`describeTest` + `withVibehardPage` in
+  `vibehard/puppeteer`; single tests run via `--test-name-pattern`, so
+  leaf titles must be unique per file). Third-party runners can be
+  added behind the same driver interface later. Also decided in
+  Stage 6: Cypress selection delegates per spec with an exact
+  title filter (support-file skip), and the Next.js Cypress build uses
+  webpack + `babel-plugin-istanbul` (`next build --webpack`, forced
+  server source maps) because the Turbopack production build admits
+  no Istanbul route — see `examples/next-cypress`.
 - Declaration syntax: wrapper options object (chosen above for Playwright)
   vs annotation comments. Assumption: options object is primary because it
   is type-checked and refactor-visible; comments only if a framework cannot

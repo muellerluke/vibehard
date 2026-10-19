@@ -3,8 +3,9 @@
 Exact e2e test selection via declared, machine-verified symbol mapping.
 See [MANIFEST.md](MANIFEST.md) for the product spec and staged build plan.
 
-Status: Stage 5 — Next.js (App + Pages Router) and separate-backend
-support. `init`, `record`, `verify`, `test`, and `explain` all work.
+Status: Stage 6 — Playwright, Puppeteer, and Cypress adapters.
+`init`, `record`, `verify`, `test`, and `explain` work for all three
+frameworks.
 
 ## Usage (Playwright)
 
@@ -49,7 +50,63 @@ unmapped change, or a stale lockfile, runs the full suite (exit `3` under
 branch by default, and `ignore` globs for paths that may change freely.
 
 Running plain `playwright test` is unaffected; the adapter only observes
-when invoked through the vibehard CLI. Verification is Chromium-only in v1.
+when invoked through the vibehard CLI. Verification is Chromium-only in v1
+(Cypress client coverage comes from Istanbul instrumentation instead).
+
+## Usage (Puppeteer)
+
+The host runner is Node's built-in test runner (`node --test`).
+Register tests with `describeTest` and open pages with
+`withVibehardPage` so browser coverage starts before navigation:
+
+```js
+import puppeteer from 'puppeteer';
+import { describeTest, withVibehardPage } from 'vibehard/puppeteer';
+
+describeTest('home page shows the cart total', {
+  uses: ['src/lib/cart.ts#Cart.addItem'],
+}, async () => {
+  const browser = await puppeteer.launch();
+  const page = await withVibehardPage(browser);
+  await page.goto(process.env['VIBEHARD_BASE_URL'] ?? 'http://127.0.0.1:4174');
+  // ...assertions; closing the page/browser snapshots coverage first
+});
+```
+
+Set `"framework": "puppeteer"` in `vibehard.config` and use the same
+`record` / `verify` / `test` flow. Test leaf titles must be unique per
+file (single tests are run via `--test-name-pattern`). See
+`examples/plain-puppeteer` for a full non-Next setup.
+
+## Usage (Cypress)
+
+Cypress has no V8 range API, so client symbols come from Istanbul
+instrumentation of the app build; server symbols still come from Node
+V8 coverage. Wire the support file and node tasks once:
+
+```js
+// cypress/support/e2e.js
+import { registerVibehardSupport } from 'vibehard/cypress';
+registerVibehardSupport();
+
+// cypress.config (setupNodeEvents)
+import { registerVibehardTasks } from 'vibehard/cypress/node';
+
+// a spec
+import { uses } from 'vibehard/cypress';
+it('home page shows the cart total', () => {
+  uses(['src/lib/cart.ts#Cart.addItem']);
+  cy.visit('/');
+});
+```
+
+Set `"framework": "cypress"`, point `e2e.baseUrl` at
+`process.env['VIBEHARD_BASE_URL']`, instrument the app build
+(`window.__coverage__` must exist — see `examples/next-cypress` for
+the Next.js recipe), and use the same `record` / `verify` / `test`
+flow. A visited page without `__coverage__` fails verification
+closed. Selection delegates at spec granularity with an exact
+per-test title filter, so the run set matches `--dry-run`.
 
 ## Next.js and separate backends
 
@@ -58,6 +115,10 @@ Working examples with verified declarations committed in `examples/`:
 - `examples/next-fullstack` — App Router with a server component, a client
   component, a route handler, a server action, plus one Pages Router page
   and Pages API route in the same app.
+- `examples/plain-puppeteer` — bundled frontend plus a Node HTTP
+  backend, tested with Puppeteer on Node's test runner.
+- `examples/next-cypress` — the Next.js full-stack shape tested with
+  Cypress through the instrumented-coverage path.
 - `examples/next-express` — the same Next.js frontend shape plus a
   separate Express API as a labeled `servers: [{ name: "api", … }]` entry.
   Vibehard starts extra servers before the app, gives each its own port

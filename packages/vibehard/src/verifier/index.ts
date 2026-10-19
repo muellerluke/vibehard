@@ -12,6 +12,7 @@ export type { DiffInput, DiffResult } from "./diff.js";
 export {
   checkLockfile,
   emptyLockfile,
+  frameworkVersion,
   hashSymbolSources,
   parseLockfile,
   playwrightTestVersion,
@@ -31,6 +32,7 @@ export {
   freePort,
   listTests,
   makeTestId,
+  playwrightDriver,
   playwrightTailArgs,
   readArtifacts,
   resolvePlaywrightCli,
@@ -41,6 +43,14 @@ export {
   startServers,
 } from "./playwright-runner.js";
 export type { AppServerSession, ListedTest, ServersSession, SpawnCaptureResult } from "./playwright-runner.js";
+export { getFrameworkDriver } from "./driver.js";
+export type { FrameworkDriver, FrameworkName } from "./driver.js";
+export { toRunnableRef } from "./listed.js";
+export type { RunnableTestRef } from "./listed.js";
+export { puppeteerDriver } from "./puppeteer-runner.js";
+export { cypressDriver, encodeOnlyTitles, resolveCypressCli, ENV_ONLY_TITLES } from "./cypress-runner.js";
+export { discoverInFile, discoverStaticTests, findSpecFiles } from "./discovery.js";
+export type { StaticDiscoveryOptions } from "./discovery.js";
 export { formatVerifyReport, recordProject, verifyProject } from "./run.js";
 export { VibehardUsageError } from "./types.js";
 export type {

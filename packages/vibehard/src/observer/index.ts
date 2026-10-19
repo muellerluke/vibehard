@@ -28,6 +28,8 @@ export type {
   CoverageChild,
   SpawnWithCoverageOptions,
 } from "./node-child.js";
+export { observeIstanbul } from "./istanbul.js";
+export type { IstanbulCoverage } from "./istanbul.js";
 export {
   browserEntriesToInputs,
   collectBrowserScripts,

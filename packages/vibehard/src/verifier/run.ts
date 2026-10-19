@@ -4,28 +4,22 @@ import path from "node:path";
 
 import type { ScriptInput } from "../observer/types.js";
 import { indexProject } from "../indexer/index.js";
-import { observeScripts } from "../observer/index.js";
+import { mergeObservedSets, observeIstanbul, observeScripts, type IstanbulCoverage } from "../observer/index.js";
 import { filterSymbols, loadConfig, resolveGeneratedPaths, type ResolvedConfig } from "./config.js";
 import { CodemodError, rewriteDeclaration, type ExtractOptions } from "./declarations.js";
 import { diffDeclaredObserved } from "./diff.js";
+import { getFrameworkDriver, type FrameworkDriver } from "./driver.js";
 import {
   checkLockfile,
   emptyLockfile,
   hashSymbolSources,
-  playwrightTestVersion,
   readLockfile,
   writeLockfile,
   type LockfileTestEntry,
   type VibehardLockfile,
 } from "./lockfile.js";
-import {
-  listTests,
-  readArtifacts,
-  resolvePlaywrightCli,
-  runSingleTest,
-  startServers,
-  type ListedTest,
-} from "./playwright-runner.js";
+import { readArtifacts, type ListedTest } from "./listed.js";
+import { startServers } from "./servers.js";
 import {
   VibehardUsageError,
   type ProjectVerifyResult,
@@ -91,10 +85,10 @@ async function runProject(
   const symbols = filterSymbols(index.symbols, resolved);
   const knownIds = new Set(symbols.map((s) => s.id));
   const allHashes = hashSymbolSources(rootDir, symbols);
-  const frameworkVersion = playwrightTestVersion(rootDir);
+  const driver = getFrameworkDriver(resolved.config.framework);
+  const frameworkVersion = driver.version(rootDir);
 
-  const cliPath = resolvePlaywrightCli(rootDir);
-  const discovered = await listTests(rootDir, resolved, cliPath);
+  const discovered = await driver.listTests(rootDir, resolved);
   const filters = options.filter ?? [];
   const selected = discovered.filter(
     (t) =>
@@ -104,7 +98,7 @@ async function runProject(
   if (selected.length === 0) {
     throw new VibehardUsageError(
       filters.length === 0
-        ? "vibehard: no Playwright tests discovered"
+        ? `vibehard: no ${driver.name} tests discovered`
         : `vibehard: no tests match filter: ${filters.join(", ")}`,
     );
   }
@@ -128,7 +122,7 @@ async function runProject(
         mode,
         rootDir,
         resolved,
-        cliPath,
+        driver,
         test,
         symbols,
         knownIds,
@@ -142,7 +136,7 @@ async function runProject(
       // file, invalidating their listed `file:line` positions. Re-list
       // so remaining tests run at fresh positions.
       if (mode === "record" && result.result.changed === true && i + 1 < selected.length) {
-        const fresh = await listTests(rootDir, resolved, cliPath);
+        const fresh = await driver.listTests(rootDir, resolved);
         const byId = new Map(fresh.map((t) => [t.testId, t]));
         for (let j = i + 1; j < selected.length; j += 1) {
           const stale = selected[j];
@@ -169,6 +163,7 @@ async function runProject(
     drift = checkLockfile(readLockfile(resolved.lockfilePath), {
       configHash: resolved.configHash,
       frameworkVersion,
+      frameworkName: driver.name,
       expectations: results.map((r) => ({
         testId: r.testId,
         declared: r.declared,
@@ -184,12 +179,12 @@ async function runProject(
       );
     }
   } else if (mode === "verify" && !hasTestFailure && !hasMismatch) {
-    written = mergeAndWriteLockfile(resolved, frameworkVersion, entries, {
+    written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
       fullRun: filters.length === 0,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
     });
   } else if (mode === "record" && entries.size > 0) {
-    written = mergeAndWriteLockfile(resolved, frameworkVersion, entries, {
+    written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
       fullRun: filters.length === 0,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
     });
@@ -222,13 +217,15 @@ async function runProject(
 
 function mergeAndWriteLockfile(
   resolved: ResolvedConfig,
+  driver: FrameworkDriver,
   frameworkVersion: string,
   entries: ReadonlyMap<string, LockfileTestEntry>,
   scope: { fullRun: boolean; discoveredTestIds: ReadonlySet<string> },
 ): boolean {
   const lock: VibehardLockfile =
-    readLockfile(resolved.lockfilePath) ?? emptyLockfile(resolved.configHash, frameworkVersion);
-  lock.framework = { name: "playwright", version: frameworkVersion };
+    readLockfile(resolved.lockfilePath) ??
+    emptyLockfile(resolved.configHash, frameworkVersion, driver.name);
+  lock.framework = { name: driver.name, version: frameworkVersion };
   lock.configHash = resolved.configHash;
   if (scope.fullRun) {
     for (const testId of Object.keys(lock.tests)) {
@@ -243,7 +240,7 @@ interface RunOneInput {
   mode: "verify" | "record";
   rootDir: string;
   resolved: ResolvedConfig;
-  cliPath: string;
+  driver: FrameworkDriver;
   test: ListedTest;
   symbols: ReturnType<typeof filterSymbols>;
   knownIds: ReadonlySet<string>;
@@ -275,12 +272,11 @@ async function runOneTest(
   };
   try {
     const servers = await startServers(resolved);
-    let run: Awaited<ReturnType<typeof runSingleTest>>;
+    let run: Awaited<ReturnType<FrameworkDriver["runSingleTest"]>>;
     let serverScripts: ScriptInput[] = [];
     try {
-      run = await runSingleTest({
+      run = await input.driver.runSingleTest({
         rootDir,
-        cliPath: input.cliPath,
         resolved,
         test,
         env: {
@@ -308,8 +304,8 @@ async function runOneTest(
       base.status = testFailed ? "test-failed" : "error";
       base.diagnostics.push(
         testFailed
-          ? `playwright run failed (exit ${run.exitCode}) and no vibehard artifact was written`
-          : "no vibehard artifact was written; is this spec importing `test` from 'vibehard/playwright'?",
+          ? `${input.driver.name} run failed (exit ${run.exitCode}) and no vibehard artifact was written`
+          : `no vibehard artifact was written; ${input.driver.missingArtifactHint}`,
       );
       const tail = (run.stderr || run.stdout).trim().slice(-800);
       if (tail !== "") base.diagnostics.push(tail);
@@ -324,11 +320,25 @@ async function runOneTest(
       const rule = input.resolveRules.find((r) => script.url.endsWith(r.urlEndsWith));
       return rule === undefined ? script : { ...script, sourcePath: rule.path };
     });
-    const observed = observeScripts([...clientScripts, ...serverScripts], {
+    let observed = observeScripts([...clientScripts, ...serverScripts], {
       rootDir,
       symbols: input.symbols,
       appGeneratedPaths: input.generated,
     });
+    if (artifact.istanbul !== undefined) {
+      observed = mergeObservedSets(
+        observed,
+        observeIstanbul(artifact.istanbul as IstanbulCoverage | null, {
+          rootDir,
+          symbols: input.symbols,
+        }),
+      );
+    } else if (input.driver.name === "cypress") {
+      observed = mergeObservedSets(
+        observed,
+        observeIstanbul(null, { rootDir, symbols: input.symbols }),
+      );
+    }
     base.observed = observed.merged;
     base.unmappable = observed.unmappable;
     base.diagnostics.push(
@@ -387,6 +397,7 @@ async function runOneTest(
         const fileText = readFileSync(test.file, "utf8");
         const rewritten = rewriteDeclaration(fileText, test.relFile, test.title, newUses, {
           readImport: makeReadImport(test.file),
+          framework: input.driver.name,
         });
         if (rewritten.changed) writeFileSync(test.file, rewritten.text);
         base.status = "recorded";

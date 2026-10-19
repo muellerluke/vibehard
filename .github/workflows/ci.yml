@@ -22,5 +22,55 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      - name: Fast unit tests
+        working-directory: packages/vibehard
+        run: >-
+          npx vitest run
+          test/cli.test.ts test/config.test.ts test/declarations.test.ts
+          test/indexer.test.ts test/init.test.ts test/observer.test.ts
+          test/playwright-adapter.test.ts test/puppeteer-adapter.test.ts
       - run: npx vibehard --help
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: verifier+selector (tiny-app, Playwright)
+            files: test/verifier.test.ts test/selector.test.ts
+            browsers: playwright
+          - name: next-fullstack
+            files: test/next-fullstack.test.ts
+            browsers: playwright
+          - name: next-express
+            files: test/next-express.test.ts
+            browsers: playwright
+          - name: plain-puppeteer + conformance
+            files: test/plain-puppeteer.test.ts test/conformance.test.ts
+            browsers: playwright
+          - name: next-cypress
+            files: test/next-cypress.test.ts
+            browsers: cypress
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # npm ci also fetches the Puppeteer Chrome and Cypress binaries
+      # (postinstall) into the default per-user caches.
+      - run: npm ci
+      - name: Install Playwright Chromium (+ shared browser system deps)
+        if: matrix.browsers == 'playwright'
+        working-directory: packages/vibehard
+        run: npx playwright install --with-deps chromium
+      - name: Install Cypress system deps
+        if: matrix.browsers == 'cypress'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          xvfb libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev
+          libnss3 libxss1 libasound2t64 libxtst6 xauth
+      - run: npm run build
+      - name: ${{ matrix.name }}
+        working-directory: packages/vibehard
+        run: npx vitest run ${{ matrix.files }}

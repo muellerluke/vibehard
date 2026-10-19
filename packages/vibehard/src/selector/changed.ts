@@ -100,6 +100,7 @@ export function isConfigFile(file: string): boolean {
   if (CONFIG_BASENAMES.has(base)) return true;
   if (/^vibehard\.config\.[^.]+$/.test(base)) return true;
   if (/^playwright\.config\.[^.]+$/.test(base)) return true;
+  if (/^cypress\.config\.[^.]+$/.test(base)) return true;
   if (/^tsconfig(\..+)?\.json$/.test(base)) return true;
   return false;
 }

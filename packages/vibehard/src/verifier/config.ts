@@ -47,6 +47,16 @@ export interface VibehardConfig {
   /** Behavior when selection cannot be proven safe; only "full" in v1. */
   fallback?: "full";
   playwright?: { config?: string; project?: string };
+  puppeteer?: {
+    /** Extra args passed to `node` before `--test` (e.g. a TS loader). */
+    nodeArgs?: string[];
+  };
+  cypress?: {
+    /** Cypress config file, relative to the project root. */
+    config?: string;
+    /** Browser for `cypress run` (default: Cypress's default). */
+    browser?: string;
+  };
   skipVerifyBudget?: number;
   /** Map browser script URLs to generated files on disk (sibling `.map`). */
   generatedScripts?: { urlEndsWith: string; path: string }[];
@@ -139,10 +149,33 @@ function validateConfig(config: VibehardConfig, configPath: string | null): void
       `vibehard: fallback "${String(config.fallback)}" in ${where} is not supported (only "full" in v1)`,
     );
   }
-  if (config.framework !== "playwright") {
+  if (
+    config.framework !== "playwright" &&
+    config.framework !== "puppeteer" &&
+    config.framework !== "cypress"
+  ) {
     throw new VibehardUsageError(
-      `vibehard: framework "${config.framework}" in ${where} is not supported until Stage 6 (Stage 3 is Playwright-only)`,
+      `vibehard: framework "${String(config.framework)}" in ${where} is not supported (expected "playwright", "puppeteer", or "cypress")`,
     );
+  }
+  if (
+    config.puppeteer?.nodeArgs !== undefined &&
+    (!Array.isArray(config.puppeteer.nodeArgs) ||
+      config.puppeteer.nodeArgs.some((a) => typeof a !== "string"))
+  ) {
+    throw new VibehardUsageError(`vibehard: puppeteer.nodeArgs in ${where} must be an array of strings`);
+  }
+  if (
+    config.cypress?.config !== undefined &&
+    (typeof config.cypress.config !== "string" || config.cypress.config === "")
+  ) {
+    throw new VibehardUsageError(`vibehard: cypress.config in ${where} must be a non-empty string`);
+  }
+  if (
+    config.cypress?.browser !== undefined &&
+    (typeof config.cypress.browser !== "string" || config.cypress.browser === "")
+  ) {
+    throw new VibehardUsageError(`vibehard: cypress.browser in ${where} must be a non-empty string`);
   }
   if (config.app !== undefined) validateServerFields(config.app, "app", where);
   if (config.servers !== undefined) {

@@ -225,3 +225,67 @@ describe("declaration extractor + codemod", () => {
     expect(r.text.endsWith("\r\n")).toBe(true);
   });
 });
+
+describe("Cypress declaration shape (Stage 6)", () => {
+  const SPEC = [
+    'import { uses } from "vibehard/cypress";',
+    'import { appShell } from "./uses.js";',
+    "",
+    'it("declared one", () => {',
+    "  uses([...appShell, 'src/lib/a.ts#A']);",
+    "  cy.visit('/');",
+    "});",
+    "",
+    'it("undeclared one", () => {',
+    "  cy.visit('/');",
+    "});",
+    "",
+  ].join("\n");
+  const readImport = () => ({
+    fileName: "uses.js",
+    text: "export const appShell = ['src/app/layout.tsx#RootLayout'];",
+  });
+
+  it("extracts it() + uses() declarations", () => {
+    const decls = extractDeclarations(SPEC, "cypress/e2e/app.cy.js", {
+      framework: "cypress",
+      readImport,
+    });
+    expect(decls.map((d) => d.title)).toEqual(["declared one", "undeclared one"]);
+    expect(decls[0]?.uses.kind).toBe("array");
+    expect(decls[0]?.cypress?.usesName).toBe("uses");
+    expect(decls[1]?.uses.kind).toBe("none");
+  });
+
+  it("record inserts uses() as the first statement of an undeclared test", () => {
+    const out = rewriteDeclaration(SPEC, "cypress/e2e/app.cy.js", "undeclared one", [
+      "src/lib/b.ts#B",
+    ], { framework: "cypress", readImport });
+    expect(out.changed).toBe(true);
+    expect(out.text).toContain('it("undeclared one", () => {\n  uses([');
+    expect(out.text).toContain("'src/lib/b.ts#B'");
+    expect(out.finalDeclared).toEqual(["src/lib/b.ts#B"]);
+  });
+
+  it("record rewrites literals inside uses(), preserving spreads", () => {
+    const out = rewriteDeclaration(
+      SPEC,
+      "cypress/e2e/app.cy.js",
+      "declared one",
+      ["src/app/layout.tsx#RootLayout", "src/lib/c.ts#C"],
+      { framework: "cypress", readImport },
+    );
+    expect(out.text).toContain("...appShell");
+    expect(out.text).toContain("'src/lib/c.ts#C'");
+    expect(out.text).not.toContain("'src/lib/a.ts#A'");
+  });
+
+  it("record adds the uses import when the spec lacks it", () => {
+    const bare = 'it("bare", () => {\n  cy.visit("/");\n});\n';
+    const out = rewriteDeclaration(bare, "cypress/e2e/app.cy.js", "bare", ["src/lib/b.ts#B"], {
+      framework: "cypress",
+    });
+    expect(out.text.startsWith("import { uses } from 'vibehard/cypress';")).toBe(true);
+    expect(out.text).toContain("uses([");
+  });
+});

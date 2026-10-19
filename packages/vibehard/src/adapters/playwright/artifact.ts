@@ -16,10 +16,15 @@ export interface VibehardArtifact {
   line: number;
   title: string;
   titlePath: string[];
-  /** Playwright test status at fixture teardown ("passed", "failed", …). */
+  /** Framework test status at teardown ("passed", "failed", …). */
   status: string;
   declared: RuntimeDeclaration;
   clientScripts: ScriptInput[];
+  /**
+   * Cypress only: the raw Istanbul `window.__coverage__` object captured
+   * for this test, or null when the app exposed none (unmappable).
+   */
+  istanbul?: Record<string, unknown> | null;
   errors: string[];
 }
 

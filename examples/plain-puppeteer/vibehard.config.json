@@ -1,0 +1,11 @@
+{
+  "framework": "puppeteer",
+  "app": {
+    "command": "node",
+    "args": [".build/server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": { "PORT": "{port}", "CLIENT_BUNDLE": ".build/client.mjs" }
+  },
+  "testDir": "e2e",
+  "generatedScripts": [{ "urlEndsWith": "/client.js", "path": ".build/client.mjs" }]
+}

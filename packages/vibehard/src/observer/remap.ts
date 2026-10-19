@@ -8,6 +8,7 @@ import {
   TraceMap,
 } from "@jridgewell/trace-mapping";
 
+import { findEnclosingSymbol } from "../indexer/index.js";
 import type {
   ObservedRange,
   ObserveScriptsOptions,
@@ -233,6 +234,33 @@ function remapRanges(
   });
   if (appSources.length > 0) {
     const isExecuted = makeExecutedPredicate(script);
+    // Sampling hosts: executed functions whose own outer range remaps
+    // into a named symbol. Segment sampling exists to recover callees
+    // inlined into such callers. Without this restriction, segments
+    // inside executed *data* — e.g. Istanbul's coverage-object literals,
+    // whose map segments carry the locations they describe — would
+    // attribute symbols that never ran.
+    const hostRanges: { startOffset: number; endOffset: number }[] = [];
+    for (const range of executed) {
+      // Start-only attribution: a caller with an inlined callee ends in
+      // a different original file by definition, so requiring the end
+      // to stay in the start's file would reject exactly the hosts
+      // sampling exists for.
+      const sNeedle = generatedLines.positionFor(range.startOffset);
+      const sPos = originalPositionFor(tracer, sNeedle);
+      if (sPos.source === null || sPos.line === null || sPos.column === null) continue;
+      const rel = relForSource(sPos.source);
+      if (rel === null) continue;
+      const table = originalTable(sPos.source);
+      if (table === "excluded" || table === null) continue;
+      if (sPos.line > table.lineCount) continue;
+      const oStart = table.offsetFor(sPos.line, sPos.column);
+      const host =
+        findEnclosingSymbol(options.symbols, rel, oStart, oStart + 1);
+      if (host !== null) hostRanges.push(range);
+    }
+    const inHost = (offset: number): boolean =>
+      hostRanges.some((r) => offset >= r.startOffset && offset < r.endOffset);
     const seenPoints = new Set<string>();
     try {
       eachMapping(tracer, (mapping) => {
@@ -247,11 +275,15 @@ function remapRanges(
           mapping.generatedLine,
           mapping.generatedColumn,
         );
-        if (!isExecuted(generatedOffset)) return;
+        if (!isExecuted(generatedOffset) || !inHost(generatedOffset)) return;
         const rel = relForSource(mapping.source);
         if (rel === null || !knownFileSet.has(rel)) return;
         const table = originalTable(mapping.source);
         if (table === "excluded" || table === null) return;
+        // Broken composed maps (e.g. Istanbul boilerplate segments) can
+        // claim original lines past the end of the real file; a clamped
+        // offset would attribute them to whatever symbol ends the file.
+        if (mapping.originalLine > table.lineCount) return;
         const startOffset = table.offsetFor(mapping.originalLine, mapping.originalColumn);
         const key = `${rel}:${startOffset}`;
         if (seenPoints.has(key)) return;
@@ -377,6 +409,15 @@ function samePath(a: string, b: string): boolean {
 
 /** Strip scheme and query decoration from a source-map `sources` entry. */
 function stripSourceScheme(source: string): string {
+  // Webpack names sources `webpack://<namespace>/<project-relative>`
+  // (plus `external …` and `webpack/…` pseudo-modules). Drop scheme and
+  // namespace so project files resolve root-relative; pseudo-modules
+  // then fail the indexed-file match and stay excluded.
+  if (source.startsWith("webpack://")) {
+    const rest = source.slice("webpack://".length).split(/[?#]/)[0] ?? "";
+    const slash = rest.indexOf("/");
+    return slash >= 0 ? rest.slice(slash + 1) : rest;
+  }
   return (
     source
       .replace(/^file:\/\//, "")
@@ -392,7 +433,10 @@ function cleanSourcePath(source: string): string {
     .join("/")
     .replace(/^\//, "");
   // Turbopack names project files `turbopack:///[project]/<root-relative>`.
-  return clean.startsWith("[project]/") ? clean.slice("[project]/".length) : clean;
+  const withoutProject = clean.startsWith("[project]/")
+    ? clean.slice("[project]/".length)
+    : clean;
+  return withoutProject.startsWith("./") ? withoutProject.slice(2) : withoutProject;
 }
 
 function resolveOriginalPath(
@@ -438,6 +482,9 @@ export function relativePosix(root: string, absFile: string): string | null {
 
 class LineTable {
   private readonly starts: number[] = [0];
+  get lineCount(): number {
+    return this.starts.length;
+  }
   constructor(text: string) {
     for (let i = 0; i < text.length; i += 1) {
       if (text[i] === "\n") this.starts.push(i + 1);

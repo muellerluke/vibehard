@@ -1,0 +1,17 @@
+{
+  "presets": [
+    [
+      "next/babel",
+      {
+        "preset-env": {
+          "targets": { "node": "20", "browsers": ["chrome >= 111"] }
+        }
+      }
+    ]
+  ],
+  "env": {
+    "cypress": {
+      "plugins": ["istanbul"]
+    }
+  }
+}

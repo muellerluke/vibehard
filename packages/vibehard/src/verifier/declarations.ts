@@ -10,6 +10,12 @@ export class CodemodError extends Error {
 export interface ExtractOptions {
   /** Resolve a relative import specifier to file name + text (one hop). */
   readImport?: (specifier: string) => { fileName: string; text: string } | null;
+  /**
+   * Declaration shape to extract. Default: auto-detect from the file's
+   * vibehard imports (Playwright `test`, Puppeteer `describeTest`, or a
+   * Cypress `uses` binding — in that order).
+   */
+  framework?: "playwright" | "puppeteer" | "cypress";
 }
 
 export interface ExtractedSpread {
@@ -46,13 +52,24 @@ export interface ExtractedDeclaration {
   optionsPropertyCount: number;
   /** Start offset of the call expression. */
   callStart: number;
-  /** Start offset of the `uses` property, or null. */
+  /** Start offset of the `uses` property (or Cypress `uses()` call), or null. */
   usesPropertyStart: number | null;
+  /** Cypress declarations only: where a `uses()` call can be inserted. */
+  cypress?: {
+    /** Offset just after the test callback's opening `{`. */
+    bodyOpenEnd: number;
+    /** Local name bound to `uses` from 'vibehard/cypress', or null. */
+    usesName: string | null;
+  };
 }
 
 interface FileModel {
   sourceFile: ts.SourceFile;
   testName: string | null;
+  /** Local names bound to Puppeteer's `describeTest`/`test`. */
+  puppeteerTestNames: Set<string>;
+  /** Local name bound to Cypress's `uses`, or null. */
+  cypressUsesName: string | null;
   constArrays: Map<string, ts.ArrayLiteralExpression>;
   imports: Map<string, { specifier: string; importedName: string }>;
 }
@@ -65,6 +82,8 @@ function buildModel(text: string, fileName: string): FileModel {
       : ts.ScriptKind.JSX;
   const sourceFile = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
   let testName: string | null = null;
+  const puppeteerTestNames = new Set<string>();
+  let cypressUsesName: string | null = null;
   const constArrays = new Map<string, ts.ArrayLiteralExpression>();
   const imports = new Map<string, { specifier: string; importedName: string }>();
   for (const stmt of sourceFile.statements) {
@@ -77,6 +96,15 @@ function buildModel(text: string, fileName: string): FileModel {
           imports.set(el.name.text, { specifier, importedName });
           if (specifier === "vibehard/playwright" && importedName === "test") {
             testName = el.name.text;
+          }
+          if (
+            specifier === "vibehard/puppeteer" &&
+            (importedName === "describeTest" || importedName === "test")
+          ) {
+            puppeteerTestNames.add(el.name.text);
+          }
+          if (specifier === "vibehard/cypress" && importedName === "uses") {
+            cypressUsesName = el.name.text;
           }
         }
       }
@@ -92,7 +120,7 @@ function buildModel(text: string, fileName: string): FileModel {
       }
     }
   }
-  return { sourceFile, testName, constArrays, imports };
+  return { sourceFile, testName, puppeteerTestNames, cypressUsesName, constArrays, imports };
 }
 
 function evalArrayLiteral(
@@ -208,6 +236,20 @@ function extractUses(
       usesPropertyStart,
     };
   }
+  return {
+    ...base,
+    uses: extractUsesArray(init, model, options),
+    allowTransitive,
+    skipVerify,
+    usesPropertyStart,
+  };
+}
+
+function extractUsesArray(
+  init: ts.ArrayLiteralExpression,
+  model: FileModel,
+  options: ExtractOptions,
+): ExtractedUses {
   const literals: string[] = [];
   const spreads: ExtractedSpread[] = [];
   let hasNonLiteralElement = false;
@@ -225,42 +267,137 @@ function extractUses(
     }
   }
   return {
-    ...base,
-    uses: {
-      kind: "array",
-      literals,
-      spreads,
-      hasNonLiteralElement,
-      start: init.getStart(model.sourceFile),
-      end: init.end,
-    },
-    allowTransitive,
-    skipVerify,
-    usesPropertyStart,
+    kind: "array",
+    literals,
+    spreads,
+    hasNonLiteralElement,
+    start: init.getStart(model.sourceFile),
+    end: init.end,
   };
 }
 
-/** Extract every vibehard `test(...)` declaration with a literal title. */
+function calleeBaseName(call: ts.CallExpression): string | null {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (
+    ts.isPropertyAccessExpression(callee) &&
+    callee.name.text === "only" &&
+    ts.isIdentifier(callee.expression)
+  ) {
+    return callee.expression.text;
+  }
+  return null;
+}
+
+function extractCypressDeclarations(
+  model: FileModel,
+  options: ExtractOptions,
+): ExtractedDeclaration[] {
+  const out: ExtractedDeclaration[] = [];
+  const usesName = model.cypressUsesName;
+  const findUsesCall = (root: ts.Node): ts.CallExpression | null => {
+    let found: ts.CallExpression | null = null;
+    const scan = (node: ts.Node): void => {
+      if (found !== null) return;
+      if (
+        ts.isCallExpression(node) &&
+        usesName !== null &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === usesName
+      ) {
+        found = node;
+        return;
+      }
+      node.forEachChild(scan);
+    };
+    scan(root);
+    return found;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const base = calleeBaseName(node);
+      const first = node.arguments[0];
+      const title = first === undefined ? null : literalString(first);
+      if ((base === "it" || base === "test") && title !== null && first !== undefined) {
+        const callback = node.arguments[node.arguments.length - 1];
+        if (
+          callback !== undefined &&
+          (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+          callback.body !== undefined &&
+          ts.isBlock(callback.body)
+        ) {
+          const usesCall = findUsesCall(callback.body);
+          let uses: ExtractedUses = { kind: "none" };
+          let usesPropertyStart: number | null = null;
+          if (usesCall !== null) {
+            usesPropertyStart = usesCall.getStart(model.sourceFile);
+            const arg = usesCall.arguments[0];
+            uses =
+              arg !== undefined && ts.isArrayLiteralExpression(arg)
+                ? extractUsesArray(arg, model, options)
+                : {
+                    kind: "non-literal",
+                    text: arg?.getText(model.sourceFile) ?? "(no argument)",
+                  };
+          }
+          out.push({
+            title,
+            uses,
+            allowTransitive: [],
+            skipVerify: null,
+            titleEnd: first.end,
+            optionsOpenEnd: null,
+            optionsPropertyCount: 0,
+            callStart: node.getStart(model.sourceFile),
+            usesPropertyStart,
+            cypress: {
+              bodyOpenEnd: callback.body.getStart(model.sourceFile) + 1,
+              usesName,
+            },
+          });
+          return;
+        }
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(model.sourceFile);
+  return out;
+}
+
+/**
+ * Extract every vibehard declaration with a literal title for the
+ * requested (or auto-detected) framework shape: Playwright/Puppeteer
+ * options-object calls, or Cypress `it(...)` + `uses([...])` calls.
+ */
 export function extractDeclarations(
   text: string,
   fileName: string,
   options: ExtractOptions = {},
 ): ExtractedDeclaration[] {
   const model = buildModel(text, fileName);
-  if (model.testName === null) return [];
-  const testName = model.testName;
+  const framework =
+    options.framework ??
+    (model.testName !== null
+      ? "playwright"
+      : model.puppeteerTestNames.size > 0
+        ? "puppeteer"
+        : model.cypressUsesName !== null
+          ? "cypress"
+          : null);
+  if (framework === null) return [];
+  if (framework === "cypress") return extractCypressDeclarations(model, options);
+  const testNames =
+    framework === "playwright"
+      ? new Set(model.testName === null ? [] : [model.testName])
+      : model.puppeteerTestNames;
+  if (testNames.size === 0) return [];
   const out: ExtractedDeclaration[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const isTestCall =
-        (ts.isIdentifier(callee) && callee.text === testName) ||
-        (ts.isPropertyAccessExpression(callee) &&
-          callee.name.text === "only" &&
-          ts.isIdentifier(callee.expression) &&
-          callee.expression.text === testName);
+      const base = calleeBaseName(node);
       const first = node.arguments[0];
-      if (isTestCall && first !== undefined) {
+      if (base !== null && testNames.has(base) && first !== undefined) {
         const title = literalString(first);
         if (title !== null) {
           out.push({
@@ -344,6 +481,55 @@ export function rewriteDeclaration(
     throw new CodemodError(
       `test "${title}" in ${fileName}: uses is not an array literal (${decl.uses.text}); record left it untouched`,
     );
+  }
+
+  if (decl.cypress !== undefined) {
+    const usesName = decl.cypress.usesName ?? "uses";
+    const withImport = (body: string): string =>
+      decl.cypress?.usesName === null || decl.cypress?.usesName === undefined
+        ? `import { uses } from 'vibehard/cypress';${eol}${body}`
+        : body;
+    if (decl.uses.kind === "none" || decl.uses.kind === "missing") {
+      const inner = `${callIndent}  `;
+      const arr = formatUsesArray(sortedNew, [], { multiline: true, baseIndent: inner, eol });
+      const insert = `${eol}${inner}${usesName}(${arr});`;
+      const edited =
+        text.slice(0, decl.cypress.bodyOpenEnd) + insert + text.slice(decl.cypress.bodyOpenEnd);
+      const next = withImport(edited);
+      return { text: next, changed: next !== text, spreadSymbols: [], finalDeclared: sortedNew };
+    }
+    const cyUses = decl.uses;
+    if (cyUses.hasNonLiteralElement) {
+      throw new CodemodError(
+        `test "${title}" in ${fileName}: uses array contains a non-string element; record left it untouched`,
+      );
+    }
+    const cySpreadSymbols: string[] = [];
+    for (const spread of cyUses.spreads) {
+      if (spread.symbols === null) {
+        throw new CodemodError(
+          `test "${title}" in ${fileName}: cannot statically evaluate spread ...${spread.text} in uses; record left it untouched`,
+        );
+      }
+      cySpreadSymbols.push(...spread.symbols);
+    }
+    const cySpreadSet = new Set(cySpreadSymbols);
+    const cyLiterals = sortedNew.filter((id) => !cySpreadSet.has(id));
+    const cyExisting = text.slice(cyUses.start, cyUses.end);
+    const cyBaseIndent =
+      decl.usesPropertyStart !== null ? lineIndentAt(text, decl.usesPropertyStart) : callIndent;
+    const cyArr = formatUsesArray(
+      cyLiterals,
+      cyUses.spreads.map((s) => s.text),
+      { multiline: cyExisting.includes("\n"), baseIndent: cyBaseIndent, eol },
+    );
+    const next = withImport(text.slice(0, cyUses.start) + cyArr + text.slice(cyUses.end));
+    return {
+      text: next,
+      changed: next !== text,
+      spreadSymbols: [...cySpreadSet].sort(),
+      finalDeclared: [...new Set([...cyLiterals, ...cySpreadSet])].sort(),
+    };
   }
 
   if (decl.uses.kind === "none") {

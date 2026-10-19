@@ -1,0 +1,12 @@
+{
+  "framework": "cypress",
+  "app": {
+    "command": "node",
+    "args": ["start-server.mjs"],
+    "url": "http://127.0.0.1:{port}",
+    "env": { "PORT": "{port}" },
+    "readyTimeoutMs": 60000
+  },
+  "testDir": "cypress/e2e",
+  "ignore": ["next-env.d.ts"]
+}

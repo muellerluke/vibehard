@@ -1,0 +1,19 @@
+{
+  "name": "plain-puppeteer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vibehard": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.27.7",
+    "puppeteer": "^24.0.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -27,6 +27,11 @@
       "types": "./dist/cypress.d.ts",
       "import": "./dist/cypress.js",
       "require": "./dist/cypress.cjs"
+    },
+    "./cypress/node": {
+      "types": "./dist/cypress-node.d.ts",
+      "import": "./dist/cypress-node.js",
+      "require": "./dist/cypress-node.cjs"
     }
   },
   "bin": {
@@ -52,16 +57,25 @@
     "esbuild": "^0.27.7",
     "playwright": "1.59.0",
     "tsup": "^8.3.5",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "puppeteer": "^24.0.0"
   },
   "engines": {
     "node": ">=20"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.40.0 <2.0.0"
+    "@playwright/test": ">=1.40.0 <2.0.0",
+    "puppeteer": ">=22.0.0",
+    "cypress": ">=13.0.0"
   },
   "peerDependenciesMeta": {
     "@playwright/test": {
+      "optional": true
+    },
+    "puppeteer": {
+      "optional": true
+    },
+    "cypress": {
       "optional": true
     }
   }
