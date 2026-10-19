@@ -3,7 +3,7 @@
 Exact e2e test selection via declared, machine-verified symbol mapping.
 See [MANIFEST.md](MANIFEST.md) for the product spec and staged build plan.
 
-Status: Stage 0 — repo and package skeleton. CLI commands are stubs.
+Status: Stage 1 — symbol indexer. CLI commands are still stubs.
 
 ## Development
 

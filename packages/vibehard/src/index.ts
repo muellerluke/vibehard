@@ -20,3 +20,16 @@ export interface SymbolRecord {
   startLine: number;
   endLine: number;
 }
+
+export {
+  createIndexCache,
+  findEnclosingSymbol,
+  indexProject,
+} from "./indexer/index.js";
+export type {
+  IndexCache,
+  IndexDiagnostic,
+  IndexOptions,
+  IndexResult,
+  IndexStats,
+} from "./indexer/index.js";

@@ -4,7 +4,7 @@ Build plan and product specification for the `vibehard` npm package.
 This file is the contract. Implementation stages below are executed in order.
 A stage is done only when its exit criteria and listed acceptance tests pass.
 
-Status: planning. Repository is greenfield (no `package.json`, no source yet).
+Status: Stage 0 and Stage 1 complete. Next: Stage 2 (coverage observation).
 
 ## Goal
 

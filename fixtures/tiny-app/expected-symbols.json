@@ -5,16 +5,16 @@
     "qualifiedName": "Cart.addItem",
     "kind": "method",
     "startOffset": 146,
-    "endOffset": 358,
+    "endOffset": 356,
     "startLine": 10,
-    "endLine": 18
+    "endLine": 17
   },
   {
     "id": "src/lib/format.ts#formatPrice",
     "file": "src/lib/format.ts",
     "qualifiedName": "formatPrice",
     "kind": "arrow-function",
-    "startOffset": 0,
+    "startOffset": 13,
     "endOffset": 98,
     "startLine": 1,
     "endLine": 3
