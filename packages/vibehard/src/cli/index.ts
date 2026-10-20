@@ -16,7 +16,7 @@ import {
   verifyProject,
 } from "../verifier/index.js";
 
-const VERSION = "0.0.0";
+import { version as VERSION } from "../../package.json";
 
 export const COMMANDS = ["init", "record", "verify", "test", "explain"] as const;
 export type Command = (typeof COMMANDS)[number];

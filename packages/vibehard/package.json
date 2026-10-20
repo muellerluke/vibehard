@@ -1,8 +1,35 @@
 {
   "name": "vibehard",
-  "version": "0.0.0",
-  "description": "Exact e2e test selection via declared, machine-verified symbol mapping",
+  "version": "0.1.0",
+  "description": "Exact e2e test selection via automatically recorded, machine-verified symbol mapping",
   "license": "MIT",
+  "author": {
+    "name": "muellerluke",
+    "url": "https://github.com/muellerluke"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muellerluke/vibehard.git",
+    "directory": "packages/vibehard"
+  },
+  "homepage": "https://github.com/muellerluke/vibehard#readme",
+  "bugs": {
+    "url": "https://github.com/muellerluke/vibehard/issues"
+  },
+  "keywords": [
+    "e2e",
+    "test-selection",
+    "test-impact-analysis",
+    "testing",
+    "playwright",
+    "puppeteer",
+    "cypress",
+    "coverage",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -44,7 +71,8 @@
     "build": "tsup && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepare": "tsup && chmod +x dist/cli.js"
+    "prepare": "tsup && chmod +x dist/cli.js",
+    "prepublishOnly": "tsup && chmod +x dist/cli.js"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31",

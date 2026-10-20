@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { spawnCapture } from "../src/index.js";
 import { COMMANDS, runCli } from "../src/cli/index.js";
+import { version as PKG_VERSION } from "../package.json";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, "../../..");
@@ -22,8 +23,11 @@ describe("AT-01: CLI", () => {
     for (const c of COMMANDS) expect(r.stdout).toContain(c);
   });
 
-  it("--version exits 0", async () => {
-    expect((await runCli(["--version"])).exitCode).toBe(0);
+  it("--version exits 0 and matches package.json", async () => {
+    const r = await runCli(["--version"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe(PKG_VERSION);
+    expect(PKG_VERSION).not.toBe("0.0.0");
   });
 
   it("init is a real command (detection error, not a stub)", async () => {

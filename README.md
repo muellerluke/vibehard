@@ -202,3 +202,7 @@ npm test
 npm run typecheck
 npm run lint
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
