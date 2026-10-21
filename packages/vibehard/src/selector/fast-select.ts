@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import type { SymbolId, SymbolRecord } from "../index.js";
 import {
@@ -17,7 +19,7 @@ import { getFrameworkDriver } from "../verifier/driver.js";
 import {
   hashAssetBytes,
   hashSymbolTexts,
-  readLockfile,
+  parseLockfile,
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
 import type { ListedTest } from "../verifier/listed.js";
@@ -95,22 +97,50 @@ interface ParsedWithHashes {
   hashes: Record<string, string>;
 }
 
-function parseWithCache(
+async function parseWithCache(
   parser: ProjectParser,
   cache: ParseCache,
   relPosix: string,
   text: string,
-): ParsedWithHashes {
+): Promise<ParsedWithHashes> {
   const key = parseCacheKey(relPosix, text, parser.typescriptVersion);
-  const hit = cache.get(key, relPosix);
+  const hit = await cache.getAsync(key, relPosix);
   if (hit !== null && hit.hashes !== undefined) return { parsed: hit, hashes: hit.hashes };
   const parsed = hit ?? parser.parseFile(relPosix, text);
   const hashes = hashSymbolTexts(
     new Map([[relPosix, text]]),
     dedupeSymbols(parsed.symbols),
   );
-  cache.set(key, parsed, hashes);
+  await cache.setAsync(key, parsed, hashes);
   return { parsed, hashes };
+}
+
+/**
+ * File tasks in flight during head/base loads. Reads and cache I/O
+ * run on the libuv threadpool while parsing stays on the main
+ * thread, so cold loads overlap thousands of small file operations
+ * (measured as the dominant cold cost at scale) with CPU work.
+ */
+const IO_CONCURRENCY = 32;
+
+async function mapPooled<I, O>(
+  items: readonly I[],
+  fn: (item: I) => Promise<O>,
+): Promise<O[]> {
+  const results = new Array<O>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      const item = items[i];
+      if (item === undefined) continue;
+      results[i] = await fn(item);
+    }
+  };
+  const workers = Math.min(IO_CONCURRENCY, items.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
 }
 
 /** Hashes for `symbols`, served from `cached` where possible. */
@@ -146,14 +176,14 @@ export interface LoadedHeadFiles {
  * applying the same dedupe and `filterSymbols` rules as the
  * full-index path. Shared by fast selection and fast `explain`.
  */
-export function loadHeadFiles(options: {
+export async function loadHeadFiles(options: {
   rootDir: string;
   resolved: ResolvedConfig;
   sourceFiles: readonly string[];
   assetFilesWanted: readonly string[];
   parser: ProjectParser;
   cache: ParseCache;
-}): LoadedHeadFiles {
+}): Promise<LoadedHeadFiles> {
   const { rootDir, resolved, parser, cache } = options;
   const texts = new Map<string, string>();
   const symbolsByFile = new Map<string, SymbolRecord[]>();
@@ -161,15 +191,24 @@ export function loadHeadFiles(options: {
   const hashes: Record<string, string> = {};
   const unhashed: SymbolRecord[] = [];
 
-  for (const file of [...new Set(options.sourceFiles)].sort()) {
-    const text = readTextOrNull(path.resolve(rootDir, file));
-    if (text === null) continue;
-    texts.set(file, text);
-    const { parsed, hashes: fileHashes } = parseWithCache(parser, cache, file, text);
-    for (const asset of parsed.assetFiles) discoveredAssets.add(asset);
-    const filtered = filterSymbols(dedupeSymbols(parsed.symbols), resolved);
-    symbolsByFile.set(file, filtered);
-    pickHashes(hashes, filtered, fileHashes, unhashed);
+  const files = [...new Set(options.sourceFiles)].sort();
+  const loaded = await mapPooled(files, async (file) => {
+    let text: string;
+    try {
+      text = await readFile(path.resolve(rootDir, file), "utf8");
+    } catch {
+      return null;
+    }
+    const { parsed, hashes: fileHashes } = await parseWithCache(parser, cache, file, text);
+    return { file, text, parsed, fileHashes };
+  });
+  for (const entry of loaded) {
+    if (entry === null) continue;
+    texts.set(entry.file, entry.text);
+    for (const asset of entry.parsed.assetFiles) discoveredAssets.add(asset);
+    const filtered = filterSymbols(dedupeSymbols(entry.parsed.symbols), resolved);
+    symbolsByFile.set(entry.file, filtered);
+    pickHashes(hashes, filtered, entry.fileHashes, unhashed);
   }
 
   const wantedAssets = new Set([...options.assetFilesWanted, ...discoveredAssets]);
@@ -212,32 +251,69 @@ interface ParsedBaseFiles {
   hashes: Record<string, string>;
 }
 
-function parseBaseFiles(options: {
+async function parseBaseFiles(options: {
   resolved: ResolvedConfig;
   texts: ReadonlyMap<string, string>;
   parser: ProjectParser;
   cache: ParseCache;
-}): ParsedBaseFiles {
+}): Promise<ParsedBaseFiles> {
   const symbolsByFile = new Map<string, SymbolRecord[]>();
   const discoveredAssets = new Set<string>();
   const hashes: Record<string, string> = {};
   const unhashed: SymbolRecord[] = [];
-  for (const [file, text] of [...options.texts.entries()].sort(([a], [b]) =>
-    a < b ? -1 : 1,
-  )) {
-    const { parsed, hashes: fileHashes } = parseWithCache(
+  const entries = [...options.texts.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+  const loaded = await mapPooled(entries, async ([file, text]) => {
+    const { parsed, hashes: fileHashes } = await parseWithCache(
       options.parser,
       options.cache,
       file,
       text,
     );
-    for (const asset of parsed.assetFiles) discoveredAssets.add(asset);
-    const filtered = filterSymbols(dedupeSymbols(parsed.symbols), options.resolved);
-    symbolsByFile.set(file, filtered);
-    pickHashes(hashes, filtered, fileHashes, unhashed);
+    return { file, parsed, fileHashes };
+  });
+  for (const entry of loaded) {
+    for (const asset of entry.parsed.assetFiles) discoveredAssets.add(asset);
+    const filtered = filterSymbols(dedupeSymbols(entry.parsed.symbols), options.resolved);
+    symbolsByFile.set(entry.file, filtered);
+    pickHashes(hashes, filtered, entry.fileHashes, unhashed);
   }
   if (unhashed.length > 0) Object.assign(hashes, hashSymbolTexts(options.texts, unhashed));
   return { symbolsByFile, discoveredAssets, hashes };
+}
+
+interface LockfileLoad {
+  lock: VibehardLockfile | null;
+  lockError: string | null;
+  bytes: number;
+  durationMs: number;
+}
+
+/**
+ * Read and parse the lockfile asynchronously, started as soon as
+ * its path is known so the read (and, once it lands, the parse of
+ * what can be a very large v2 file) overlaps the git and discovery
+ * subprocesses. Missing file yields `lock: null, lockError: null`,
+ * exactly like the synchronous path; any other failure is reported
+ * as `lockError`. Never rejects.
+ */
+function startLockfileLoad(lockfilePath: string, wantBytes: boolean): Promise<LockfileLoad> {
+  const start = performance.now();
+  return (async (): Promise<LockfileLoad> => {
+    let lock: VibehardLockfile | null = null;
+    let lockError: string | null = null;
+    let bytes = 0;
+    try {
+      const text = await readFile(lockfilePath, "utf8");
+      if (wantBytes) bytes = Buffer.byteLength(text);
+      lock = parseLockfile(text, lockfilePath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        lockError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return { lock, lockError, bytes, durationMs: performance.now() - start };
+  })();
 }
 
 /**
@@ -256,6 +332,10 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   const diagnostics: string[] = [];
   const unsafeReasons: string[] = [];
 
+  // The lockfile is needed only at the touched-union step below;
+  // start loading it now so it overlaps the git subprocesses.
+  const lockfileLoad = startLockfileLoad(resolved.lockfilePath, timer.enabled);
+
   const { gitRoot, base } = await timer.run("git.base", async () => {
     const gitRoot = await resolveGitRoot(rootDir);
     const base = await resolveBase(gitRoot, {
@@ -265,42 +345,24 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
     return { gitRoot, base };
   });
 
-  const changedFiles = await timer.run(
-    "git.changedFiles",
-    () => listChangedFiles(gitRoot, base.sha),
-    (files) => ({ files: files.length }),
-  );
+  // Independent git reads overlap: changed-file listing and the patch
+  // only need the resolved base.
+  const [changedFiles, patchText] = await Promise.all([
+    timer.run(
+      "git.changedFiles",
+      () => listChangedFiles(gitRoot, base.sha),
+      (files) => ({ files: files.length }),
+    ),
+    timer.run("git.diffPatch", () => diffPatch(gitRoot, base.sha), (text) => ({
+      bytes: Buffer.byteLength(text),
+    })),
+  ]);
   const changedSet = new Set(changedFiles.map((c) => c.file));
-  const patchText = await timer.run("git.diffPatch", () => diffPatch(gitRoot, base.sha), (text) => ({
-    bytes: Buffer.byteLength(text),
-  }));
   const patches = timer.runSync("diff.parse", () => parseUnifiedDiff(patchText, gitRoot.prefix));
   const patchByFile = new Map<string, FilePatch>();
   for (const patch of patches) {
     const key = patch.newFile ?? patch.oldFile;
     if (key !== null) patchByFile.set(key, patch);
-  }
-
-  // Lockfile first: selection is meaningless without it, and the
-  // touched union defines the head parse set.
-  let lock: VibehardLockfile | null = null;
-  let lockError: string | null = null;
-  const endLockLoad = timer.span("lockfile.load");
-  let lockBytes = 0;
-  try {
-    if (existsSync(resolved.lockfilePath)) {
-      if (timer.enabled) lockBytes = statSync(resolved.lockfilePath).size;
-      lock = readLockfile(resolved.lockfilePath);
-    }
-  } catch (error) {
-    lockError = error instanceof Error ? error.message : String(error);
-  } finally {
-    const entries = lock === null ? [] : Object.values(lock.tests);
-    endLockLoad({
-      bytes: lockBytes,
-      tests: entries.length,
-      edges: entries.reduce((sum, entry) => sum + Object.keys(entry.touched).length, 0),
-    });
   }
 
   const driver = getFrameworkDriver(resolved.config.framework);
@@ -309,6 +371,17 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
     () => driver.listTests(rootDir, resolved),
     (tests) => ({ tests: tests.length }),
   );
+
+  // The touched union (from the lockfile) defines the head parse set.
+  const { lock, lockError, bytes: lockBytes, durationMs: lockLoadMs } = await lockfileLoad;
+  if (timer.enabled) {
+    const entries = lock === null ? [] : Object.values(lock.tests);
+    timer.record("lockfile.load", lockLoadMs, {
+      bytes: lockBytes,
+      tests: entries.length,
+      edges: entries.reduce((sum, entry) => sum + Object.keys(entry.touched).length, 0),
+    });
+  }
   const discoveredIds = new Set(discovered.map((t) => t.testId));
   const specFiles = new Set(discovered.map((t) => t.relFile));
   const lockfileRel = toPosix(path.relative(rootDir, resolved.lockfilePath));
@@ -361,7 +434,7 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   }
   const hitsBeforeHead = cache.hits;
   const missesBeforeHead = cache.misses;
-  const head = timer.runSync(
+  const head = await timer.run(
     "fast.parse.head",
     () =>
       loadHeadFiles({
@@ -387,14 +460,23 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   const assetFilesKnown = new Set([...lockfileAssets, ...head.discoveredAssets]);
   const fetchList = new Set<string>(candidateAppFiles);
   for (const file of changedSet) if (assetFilesKnown.has(file)) fetchList.add(file);
-  const baseBytes = await timer.run(
-    "fast.baseTexts",
-    () => readBaseFiles(gitRoot, base.sha, [...fetchList].sort()),
-    (map) => ({
-      files: map.size,
-      present: [...map.values()].filter((b) => b !== null).length,
-    }),
-  );
+  // Tracked-at-base only needs the touched-file set: overlap its
+  // tree walk with the base-content reads.
+  const [baseBytes, trackedAtBase] = await Promise.all([
+    timer.run(
+      "fast.baseTexts",
+      () => readBaseFiles(gitRoot, base.sha, [...fetchList].sort()),
+      (map) => ({
+        files: map.size,
+        present: [...map.values()].filter((b) => b !== null).length,
+      }),
+    ),
+    timer.run(
+      "fast.baseTracked",
+      () => baseTrackedFiles(gitRoot, base.sha, [...touchedFiles].sort()),
+      (set) => ({ files: touchedFiles.size, tracked: set.size }),
+    ),
+  ]);
   const baseTexts = new Map<string, string>();
   for (const file of candidateAppFiles) {
     if (!membership.has(file)) continue;
@@ -403,7 +485,7 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   }
   const hitsBeforeBase = cache.hits;
   const missesBeforeBase = cache.misses;
-  const baseParsed = timer.runSync(
+  const baseParsed = await timer.run(
     "fast.parse.base",
     () => parseBaseFiles({ resolved, texts: baseTexts, parser, cache }),
     (parsed) => ({
@@ -443,11 +525,6 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
     baseByFile.set(file, [record]);
     baseHashes[record.id] = hashAssetBytes(bytes);
   }
-  const trackedAtBase = await timer.run(
-    "fast.baseTracked",
-    () => baseTrackedFiles(gitRoot, base.sha, [...touchedFiles].sort()),
-    (set) => ({ files: touchedFiles.size, tracked: set.size }),
-  );
   timer.runSync(
     "hash.base",
     () => {
@@ -555,11 +632,12 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
     if (entry === undefined) {
       reasons.push({ type: "unrecorded" });
     } else {
-      for (const id of Object.keys(entry.touched).sort()) {
-        if (changedSymbols.has(id as SymbolId)) {
-          const via = entry.touched[id as SymbolId] ?? "direct";
-          reasons.push({ type: "changed-symbol", symbol: id, via });
-        }
+      const matched = Object.keys(entry.touched)
+        .filter((id) => changedSymbols.has(id as SymbolId))
+        .sort();
+      for (const id of matched) {
+        const via = entry.touched[id as SymbolId] ?? "direct";
+        reasons.push({ type: "changed-symbol", symbol: id, via });
       }
     }
     if (reasons.length > 0) selected.push({ ...toRef(test), reasons });

@@ -575,23 +575,35 @@ Environment: Apple M1 Pro, macOS (arm64), Node v23.5.0, base commit
 one warm-up, `leaf` scenario, built CLI (selection total excludes
 framework discovery where stated):
 
-| Preset | Full (Phase 0 baseline) | Full (this session) | Fast, cold cache | Fast, warm cache |
+| Preset | Full (Phase 0 baseline) | Full (final session) | Fast, cold cache | Fast, warm cache |
 |---|---|---|---|---|
-| smoke | 880 ms | 869 ms | — | 142 ms |
-| large | 5,600 ms | 5,640 ms | 2,796 ms | 1,194 ms |
+| smoke | 880 ms | 869 ms | — | 118 ms |
+| large | 5,600 ms | 5,548 ms | 1,552 ms | 1,018 ms |
 
 At `large`, the two full indexes, worktree, and whole-repo hashing
-(≈4.9 s of the full total) are replaced by membership (35 ms),
-touched union (58 ms), parse (361 ms warm / 2,006 ms cold), base
-texts + tracked check (36 ms), and subset hashing folded into the
-parse cache hits. Against the proposed AT-S04 budget (≤2 s cold,
-≤1 s warm excluding discovery): warm measures 1.14 s excluding
-discovery, whose largest single remaining term is lockfile load
-(412 ms for the 72 MB v2 file — Phase 2); cold measures 2.74 s,
-dominated by parsing the ~3,000-file touched union once.
-`worker_threads` sharding of cold parses and the Phase 2 lockfile
-are the two follow-ups that close the remaining gap; the budget
-remains unenforced until then.
+(≈4.9 s of the full total) are replaced by membership (33 ms),
+touched union (58 ms), parse (276 ms warm / 811 ms cold), base
+texts + tracked check (33 ms), and subset hashing folded into the
+parse cache hits. Excluding framework discovery, that is 1,498 ms
+cold and 968 ms warm — inside the proposed AT-S04 budget (≤2 s
+cold, ≤1 s warm), which remains unenforced in CI. Closing the
+last of the gap did not need `worker_threads`: profiling showed
+parsing itself is only ≈340 ms at `large`, while synchronous
+cache writes cost ≈1.2 s cold. The follow-up therefore made
+file/cache I/O asynchronous and pooled (libuv threadpool,
+32 tasks in flight), gated prune directory scans behind a
+measured size estimate (scanning every 64 writes was quadratic in
+entry count), snapshotted cache directory entries so cold runs
+skip one doomed read per file, overlapped the lockfile read with
+the git/discovery subprocesses, deduplicated the trust check by
+(symbol, expected-hash) pair, and sorted only matched symbols in
+the selection loop. Because several phases now overlap, fast-path
+phase durations no longer sum to the selection total (the
+`lockfile.load` phase reports the loader's own duration, and a
+git phase can be inflated by main-thread work queued ahead of
+its completion callback). The largest remaining warm term is
+still the 72 MB v2 lockfile parse (≈390 ms of loader time,
+mostly hidden behind subprocess waits) — Phase 2's concern.
 
 ### Phase 2 — Lockfile v3: interned symbols
 

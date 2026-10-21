@@ -305,7 +305,7 @@ async function explainProjectFast(options: ExplainOptions): Promise<ExplainResul
     // explain works outside a git repo; the cache is optional
   }
 
-  const loadFor = (entries: readonly LockfileTestEntry[], extraFile?: string) => {
+  const loadFor = async (entries: readonly LockfileTestEntry[], extraFile?: string) => {
     const sourceFiles = new Set<string>();
     const assetFiles = new Set<string>();
     const addTouched = (entry: LockfileTestEntry): void => {
@@ -343,7 +343,7 @@ async function explainProjectFast(options: ExplainOptions): Promise<ExplainResul
     for (const [testId, entry] of Object.entries(lock?.tests ?? {})) {
       if (entry.touched[query as SymbolId] !== undefined) touching.push([testId, entry]);
     }
-    const loaded = loadFor(touching.map(([, e]) => e), file);
+    const loaded = await loadFor(touching.map(([, e]) => e), file);
     const loadedSymbols: SymbolRecord[] = [];
     for (const symbols of loaded.symbolsByFile.values()) loadedSymbols.push(...symbols);
     const knownIds = new Set(loadedSymbols.map((s) => s.id));
@@ -408,7 +408,7 @@ async function explainProjectFast(options: ExplainOptions): Promise<ExplainResul
       matchedEntries.push(entry);
     }
   }
-  const loaded = loadFor(matchedEntries);
+  const loaded = await loadFor(matchedEntries);
   const knownIds = new Set<SymbolId>();
   for (const symbols of loaded.symbolsByFile.values()) {
     for (const s of symbols) knownIds.add(s.id);

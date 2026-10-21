@@ -122,12 +122,36 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
   }
   let allBase = true;
   let allHead = true;
+  // The verdict is a universal quantifier over distinct (symbol,
+  // expected hash) pairs — the same pair recurs once per touching
+  // test, so check each pair once. (Partial re-records can record
+  // one symbol under different hashes in different entries; those
+  // conflicts are checked per distinct expected hash.)
+  const checked = new Map<string, string | undefined>();
+  const conflicting = new Map<string, Set<string | undefined>>();
+  const check = (id: string, expected: string | undefined): void => {
+    if (expected === undefined || input.baseHashes[id] !== expected) allBase = false;
+    if (expected === undefined || input.headHashes[id] !== expected) allHead = false;
+  };
   for (const [testId, entry] of Object.entries(input.lock.tests)) {
     if (!input.discoveredIds.has(testId)) continue;
     for (const id of Object.keys(entry.touched)) {
       const expected = entry.symbolHashes[id];
-      if (expected === undefined || input.baseHashes[id] !== expected) allBase = false;
-      if (expected === undefined || input.headHashes[id] !== expected) allHead = false;
+      if (!checked.has(id)) {
+        checked.set(id, expected);
+        check(id, expected);
+        continue;
+      }
+      if (checked.get(id) === expected) continue;
+      let seen = conflicting.get(id);
+      if (seen === undefined) {
+        seen = new Set<string | undefined>([checked.get(id)]);
+        conflicting.set(id, seen);
+      }
+      if (!seen.has(expected)) {
+        seen.add(expected);
+        check(id, expected);
+      }
     }
   }
   if (!allBase && !allHead) {
@@ -364,11 +388,14 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
     if (entry === undefined) {
       reasons.push({ type: "unrecorded" });
     } else {
-      for (const id of Object.keys(entry.touched).sort()) {
-        if (changedSymbols.has(id as SymbolId)) {
-          const via = entry.touched[id as SymbolId] ?? "direct";
-          reasons.push({ type: "changed-symbol", symbol: id, via });
-        }
+      // Sort only the matched symbols (reason order is unchanged);
+      // touched sets can hold hundreds of keys per test.
+      const matched = Object.keys(entry.touched)
+        .filter((id) => changedSymbols.has(id as SymbolId))
+        .sort();
+      for (const id of matched) {
+        const via = entry.touched[id as SymbolId] ?? "direct";
+        reasons.push({ type: "changed-symbol", symbol: id, via });
       }
     }
     if (reasons.length > 0) selected.push({ ...toRef(test), reasons });

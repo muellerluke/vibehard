@@ -95,6 +95,57 @@ describe("ParseCache", () => {
     expect(existsSync(file)).toBe(false);
   });
 
+  it("async get/set round-trip and share entries with the sync API", async () => {
+    const cache = new ParseCache(path.join(makeTempDir(), "cache"));
+    const parsed = parsedFixture();
+    const key = parseCacheKey(REL, TEXT, "5.7.2");
+    const hashes = { "src/a.ts#a": "b".repeat(64) };
+    expect(await cache.getAsync(key, REL)).toBeNull();
+    await cache.setAsync(key, parsed, hashes);
+    expect(await cache.getAsync(key, REL)).toEqual({ ...parsed, hashes });
+    // Written async, readable sync (same on-disk shape).
+    expect(cache.get(key, REL)).toEqual({ ...parsed, hashes });
+    // Concurrent writes of one key settle on one valid entry.
+    await Promise.all([
+      cache.setAsync(key, parsed, hashes),
+      cache.setAsync(key, parsed, hashes),
+      cache.setAsync(key, parsed, hashes),
+    ]);
+    expect(await cache.getAsync(key, REL)).toEqual({ ...parsed, hashes });
+  });
+
+  it("async reads snapshot the directory once; new instances see later writes", async () => {
+    const dir = path.join(makeTempDir(), "cache");
+    const cache = new ParseCache(dir);
+    const parsed = parsedFixture();
+    const key = parseCacheKey(REL, TEXT, "5.7.2");
+    // First async read snapshots the (empty) directory.
+    expect(await cache.getAsync(key, REL)).toBeNull();
+    // An entry written behind the snapshot (e.g. by another process)
+    // reads as a miss for this instance, never as wrong data.
+    writeFileSync(
+      path.join(dir, `${key}.json`),
+      JSON.stringify({ symbols: parsed.symbols, assetFiles: [] }),
+    );
+    expect(await cache.getAsync(key, REL)).toBeNull();
+    const fresh = new ParseCache(dir);
+    expect((await fresh.getAsync(key, REL))?.symbols).toEqual(parsed.symbols);
+    // Entries written through the instance join its snapshot.
+    const key2 = parseCacheKey(REL, `${TEXT}//2\n`, "5.7.2");
+    await cache.setAsync(key2, parsed);
+    expect((await cache.getAsync(key2, REL))?.symbols).toEqual(parsed.symbols);
+  });
+
+  it("does not rescan the directory on a write cadence far below the budget", async () => {
+    const dir = path.join(makeTempDir(), "cache");
+    const cache = new ParseCache(dir, { maxBytes: 1 << 30, pruneEveryWrites: 2 });
+    const parsed = parsedFixture();
+    for (let i = 0; i < 6; i += 1) {
+      await cache.setAsync(parseCacheKey(REL, `${TEXT}//${i}\n`, "5.7.2"), parsed);
+    }
+    expect(readdirSync(dir).filter((n) => n.endsWith(".json"))).toHaveLength(6);
+  });
+
   it("is a no-op when disabled (null dir)", () => {
     const cache = new ParseCache(null);
     const key = parseCacheKey(REL, TEXT, "5.7.2");

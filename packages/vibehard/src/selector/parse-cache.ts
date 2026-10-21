@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { SymbolRecord } from "../index.js";
@@ -114,6 +115,27 @@ export interface ParseCacheOptions {
  * degrades to a cache miss, and deleting the directory can never
  * change results.
  */
+function serializeEntry(parsed: ParsedFile, hashes?: Record<string, string>): string {
+  const file: CacheFileShape = {
+    symbols: parsed.symbols.map((s) => {
+      const copy: SymbolRecord = { ...s };
+      delete copy.references;
+      return copy;
+    }),
+    assetFiles: [...parsed.assetFiles],
+    ...(hashes !== undefined ? { hashes: { ...hashes } } : {}),
+  };
+  return JSON.stringify(file);
+}
+
+function toCachedParse(value: CacheFileShape): CachedParse {
+  return {
+    symbols: value.symbols,
+    assetFiles: value.assetFiles,
+    ...(value.hashes !== undefined ? { hashes: value.hashes } : {}),
+  };
+}
+
 export class ParseCache {
   readonly dir: string | null;
   hits = 0;
@@ -121,6 +143,12 @@ export class ParseCache {
   readonly #maxBytes: number;
   readonly #pruneEveryWrites: number;
   #writes = 0;
+  #tmpCounter = 0;
+  /** Entry keys known on disk, snapshotted on first async read. */
+  #known: Set<string> | null = null;
+  #knownPromise: Promise<Set<string>> | null = null;
+  /** Approximate cache size once measured; gates prune scans. */
+  #estimatedBytes: number | null = null;
 
   constructor(dir: string | null, options: ParseCacheOptions = {}) {
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -149,7 +177,7 @@ export class ParseCache {
   }
 
   get(key: string, relPosix: string): CachedParse | null {
-    if (this.dir === null) {
+    if (this.dir === null || (this.#known !== null && !this.#known.has(key))) {
       this.misses += 1;
       return null;
     }
@@ -166,11 +194,61 @@ export class ParseCache {
         return null;
       }
       this.hits += 1;
-      return {
-        symbols: value.symbols,
-        assetFiles: value.assetFiles,
-        ...(value.hashes !== undefined ? { hashes: value.hashes } : {}),
-      };
+      return toCachedParse(value);
+    } catch {
+      this.misses += 1;
+      return null;
+    }
+  }
+
+  /**
+   * Keys present on disk, listed once per cache instance. Entries
+   * written by other processes after the snapshot simply read as
+   * misses (recomputed and overwritten atomically); entries deleted
+   * after it fail their read as misses. Correctness never depends
+   * on the snapshot being current — it exists so a cold run does
+   * not pay one doomed file read per source file.
+   */
+  async #index(): Promise<Set<string>> {
+    if (this.#known !== null) return this.#known;
+    this.#knownPromise ??= (async () => {
+      const known = new Set<string>();
+      if (this.dir !== null) {
+        try {
+          for (const name of await readdir(this.dir)) {
+            if (name.endsWith(".json")) known.add(name.slice(0, -".json".length));
+          }
+        } catch {
+          // unreadable dir: every read misses, writes still attempted
+        }
+      }
+      this.#known = known;
+      return known;
+    })();
+    return this.#knownPromise;
+  }
+
+  /** Async `get`: file reads run on the libuv threadpool, off-thread. */
+  async getAsync(key: string, relPosix: string): Promise<CachedParse | null> {
+    if (this.dir === null) {
+      this.misses += 1;
+      return null;
+    }
+    if (!(await this.#index()).has(key)) {
+      this.misses += 1;
+      return null;
+    }
+    const file = path.join(this.dir, `${key}.json`);
+    try {
+      const value: unknown = JSON.parse(await readFile(file, "utf8"));
+      if (!isValidEntry(value, relPosix)) {
+        this.misses += 1;
+        this.#known?.delete(key);
+        await rm(file, { force: true }).catch(() => undefined);
+        return null;
+      }
+      this.hits += 1;
+      return toCachedParse(value);
     } catch {
       this.misses += 1;
       return null;
@@ -179,18 +257,10 @@ export class ParseCache {
 
   set(key: string, parsed: ParsedFile, hashes?: Record<string, string>): void {
     if (this.dir === null) return;
-    const file: CacheFileShape = {
-      symbols: parsed.symbols.map((s) => {
-        const copy: SymbolRecord = { ...s };
-        delete copy.references;
-        return copy;
-      }),
-      assetFiles: [...parsed.assetFiles],
-      ...(hashes !== undefined ? { hashes: { ...hashes } } : {}),
-    };
-    const tmp = path.join(this.dir, `${key}.tmp-${process.pid}-${this.#writes}`);
+    const tmp = path.join(this.dir, `${key}.tmp-${process.pid}-${this.#tmpCounter++}`);
+    const data = serializeEntry(parsed, hashes);
     try {
-      writeFileSync(tmp, JSON.stringify(file));
+      writeFileSync(tmp, data);
       renameSync(tmp, path.join(this.dir, `${key}.json`));
     } catch {
       try {
@@ -200,27 +270,72 @@ export class ParseCache {
       }
       return;
     }
+    this.#known?.add(key);
+    this.#noteWrite(Buffer.byteLength(data));
+  }
+
+  /** Async `set`: write + rename run on the libuv threadpool. */
+  async setAsync(
+    key: string,
+    parsed: ParsedFile,
+    hashes?: Record<string, string>,
+  ): Promise<void> {
+    if (this.dir === null) return;
+    const tmp = path.join(this.dir, `${key}.tmp-${process.pid}-${this.#tmpCounter++}`);
+    const data = serializeEntry(parsed, hashes);
+    try {
+      await writeFile(tmp, data);
+      await rename(tmp, path.join(this.dir, `${key}.json`));
+    } catch {
+      await rm(tmp, { force: true }).catch(() => undefined);
+      return;
+    }
+    this.#known?.add(key);
+    this.#noteWrite(Buffer.byteLength(data));
+  }
+
+  /**
+   * Record one successful write and maybe evict. Prune scans are
+   * O(entries) `stat` calls, so they only run once the measured
+   * cache size plus this session's writes can exceed the budget —
+   * scanning on a fixed write cadence made cold bulk writes
+   * quadratic in entry count.
+   */
+  #noteWrite(bytes: number): void {
     this.#writes += 1;
-    if (this.#writes % this.#pruneEveryWrites === 0) this.prune();
+    if (this.#estimatedBytes !== null) this.#estimatedBytes += bytes;
+    if (this.#writes % this.#pruneEveryWrites !== 0) return;
+    if (this.#estimatedBytes === null) {
+      this.#estimatedBytes = this.#scan().total;
+    }
+    if (this.#estimatedBytes > this.#maxBytes) this.prune();
+  }
+
+  #scan(): { entries: { file: string; size: number; mtimeMs: number }[]; total: number } {
+    const entries: { file: string; size: number; mtimeMs: number }[] = [];
+    let total = 0;
+    if (this.dir === null) return { entries, total };
+    for (const name of readdirSync(this.dir)) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(this.dir, name);
+      try {
+        const stat = statSync(file);
+        entries.push({ file, size: stat.size, mtimeMs: stat.mtimeMs });
+        total += stat.size;
+      } catch {
+        // raced with another process; ignore
+      }
+    }
+    return { entries, total };
   }
 
   /** Evict oldest entries until the cache is within its byte budget. */
   prune(): void {
     if (this.dir === null) return;
     try {
-      const entries: { file: string; size: number; mtimeMs: number }[] = [];
-      let total = 0;
-      for (const name of readdirSync(this.dir)) {
-        if (!name.endsWith(".json")) continue;
-        const file = path.join(this.dir, name);
-        try {
-          const stat = statSync(file);
-          entries.push({ file, size: stat.size, mtimeMs: stat.mtimeMs });
-          total += stat.size;
-        } catch {
-          // raced with another process; ignore
-        }
-      }
+      const { entries, total: scanned } = this.#scan();
+      let total = scanned;
+      this.#estimatedBytes = total;
       if (total <= this.#maxBytes) return;
       entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
       const target = Math.floor(this.#maxBytes * 0.8);
@@ -229,10 +344,13 @@ export class ParseCache {
         try {
           rmSync(entry.file, { force: true });
           total -= entry.size;
+          const name = path.basename(entry.file);
+          this.#known?.delete(name.slice(0, -".json".length));
         } catch {
           // best-effort
         }
       }
+      this.#estimatedBytes = total;
     } catch {
       // eviction is best-effort; an oversized cache is still correct
     }
