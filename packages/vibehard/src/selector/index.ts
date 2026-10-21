@@ -25,6 +25,8 @@ export {
 export type { BaseWorktree, ChangedFile, ChangedFileStatus, GitRoot } from "./git.js";
 export { explainProject, formatExplainReport, formatSelectionReport, formatTestReport, testProject } from "./run.js";
 export { lockfileTrustReasons, selectTests } from "./select.js";
+export { formatPhaseTimings } from "../timing.js";
+export type { PhaseTiming } from "../timing.js";
 export type {
   DiscoveredTestRef,
   ExplainOptions,

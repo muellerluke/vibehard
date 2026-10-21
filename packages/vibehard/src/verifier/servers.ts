@@ -13,21 +13,56 @@ export interface SpawnCaptureResult {
   stderr: string;
 }
 
+export interface SpawnCaptureOptions {
+  cwd: string;
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+  /** Written to the child's stdin, which is then closed. */
+  input?: string | Buffer;
+}
+
 export function spawnCapture(
   command: string,
   args: string[],
-  options: { cwd: string; env?: Record<string, string | undefined>; timeoutMs?: number },
+  options: SpawnCaptureOptions,
 ): Promise<SpawnCaptureResult> {
+  return spawnCaptureRaw(command, args, options).then(({ exitCode, stdout, stderr }) => ({
+    exitCode,
+    stdout: stdout.toString("utf8"),
+    stderr,
+  }));
+}
+
+export interface SpawnCaptureBufferResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: string;
+}
+
+/** Like `spawnCapture`, but stdout stays binary (never decoded). */
+export function spawnCaptureBuffer(
+  command: string,
+  args: string[],
+  options: SpawnCaptureOptions,
+): Promise<SpawnCaptureBufferResult> {
+  return spawnCaptureRaw(command, args, options);
+}
+
+function spawnCaptureRaw(
+  command: string,
+  args: string[],
+  options: SpawnCaptureOptions,
+): Promise<SpawnCaptureBufferResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
-    let stdout = "";
+    const stdoutChunks: Buffer[] = [];
     let stderr = "";
     child.stdout?.on("data", (c: Buffer) => {
-      stdout += c.toString();
+      stdoutChunks.push(c);
     });
     child.stderr?.on("data", (c: Buffer) => {
       stderr += c.toString();
@@ -40,8 +75,12 @@ export function spawnCapture(
     });
     child.once("exit", (code) => {
       clearTimeout(killer);
-      resolve({ exitCode: code ?? 1, stdout, stderr });
+      resolve({ exitCode: code ?? 1, stdout: Buffer.concat(stdoutChunks), stderr });
     });
+    if (options.input !== undefined && child.stdin !== null) {
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(options.input);
+    }
   });
 }
 

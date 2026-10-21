@@ -1,4 +1,5 @@
 import type { SymbolId } from "../index.js";
+import type { PhaseTiming } from "../timing.js";
 import type { TouchKind, TouchedSet } from "../verifier/touched.js";
 
 /** Why one test was selected (`--dry-run` selection reasons). */
@@ -43,6 +44,8 @@ export interface SelectionResult {
   /** First unsafe reason, or null when selection is safe. */
   unsafeReason: string | null;
   diagnostics: string[];
+  /** Phase timings; present only when timing was requested. */
+  timing?: PhaseTiming[];
 }
 
 export interface SelectOptions {
@@ -50,6 +53,15 @@ export interface SelectOptions {
   configPath?: string;
   /** Explicit base ref; defaults to merge-base with `baseBranch`, else HEAD. */
   baseRef?: string;
+  /** Collect phase timings into the result. Defaults to `VIBEHARD_PROFILE`. */
+  timing?: boolean;
+  /**
+   * Use the diff-proportional fast selection path (parse-only, no
+   * TypeScript Program, no base worktree). Defaults to
+   * `VIBEHARD_FAST_SELECT`. Any fast-path failure falls back to the
+   * full-index algorithm with a diagnostic.
+   */
+  fastSelect?: boolean;
 }
 
 export interface TestProjectOptions extends SelectOptions {
@@ -79,6 +91,8 @@ export interface TestProjectResult {
   /** Captured framework output when a run happened. */
   output: { stdout: string; stderr: string } | null;
   diagnostics: string[];
+  /** Phase timings; present only when timing was requested. */
+  timing?: PhaseTiming[];
 }
 
 export interface ExplainSymbolStatus {
@@ -121,4 +135,6 @@ export interface ExplainOptions {
   rootDir: string;
   configPath?: string;
   query: string;
+  /** Parse only the files the query needs. Defaults to `VIBEHARD_FAST_SELECT`. */
+  fastSelect?: boolean;
 }

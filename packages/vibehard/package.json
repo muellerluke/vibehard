@@ -72,7 +72,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepare": "tsup && chmod +x dist/cli.js",
-    "prepublishOnly": "tsup && chmod +x dist/cli.js"
+    "prepublishOnly": "tsup && chmod +x dist/cli.js",
+    "perf": "node perf/run-perf.mjs"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31",

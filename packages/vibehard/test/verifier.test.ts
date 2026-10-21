@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  formatVerifyReport,
   freePort,
   readLockfile,
   recordProject,
@@ -276,6 +277,71 @@ ${text.replace(
     expect(recorded.exitCode).toBe(1);
     expect(readFileSync(specPath(dir), "utf8")).toBe(specBefore);
     expect(existsSync(path.join(dir, "vibehard.lock.json"))).toBe(false);
+  }, T);
+
+  it("Phase 0 timing: record reports observation phases and writes the same lockfile", async () => {
+    const timedDir = await makeCopy();
+    const timed = await recordProject({
+      rootDir: timedDir,
+      filter: ["coupon"],
+      timing: true,
+    });
+    expect(timed.exitCode).toBe(0);
+    expect(timed.timing?.map((p) => p.name)).toEqual(
+      expect.arrayContaining([
+        "config.load",
+        "index",
+        "hash.allSymbols",
+        "tests.discovery",
+        "observation.total",
+        "observation.serverStart",
+        "observation.frameworkRun",
+        "observation.serverStop",
+        "observation.coverageMap",
+        "observation.touchedCompute",
+        "observation.hashTouched",
+        "lockfile.checkOrWrite",
+        "total",
+      ]),
+    );
+    const framework = timed.timing?.find((p) => p.name === "observation.frameworkRun");
+    expect(framework?.count).toBe(2);
+    const entry = only(timed);
+    expect(entry.timing?.observationCount).toBe(2);
+    expect(entry.timing?.observations).toHaveLength(2);
+    expect(entry.timing?.phases.map((p) => p.name)).toContain(
+      "observation.frameworkRun",
+    );
+    const report = formatVerifyReport(timed);
+    expect(report).toContain("timing:");
+    expect(report).toContain("slowest tests (observation):");
+
+    const untimedDir = await makeCopy();
+    const untimed = await recordProject({
+      rootDir: untimedDir,
+      filter: ["coupon"],
+      timing: false,
+    });
+    expect(untimed.exitCode).toBe(0);
+    expect(untimed.timing).toBeUndefined();
+    expect(only(untimed).timing).toBeUndefined();
+    expect(readFileSync(path.join(timedDir, "vibehard.lock.json"), "utf8")).toBe(
+      readFileSync(path.join(untimedDir, "vibehard.lock.json"), "utf8"),
+    );
+    const strip = (r: ProjectVerifyResult): unknown => {
+      const clone = JSON.parse(
+        JSON.stringify(r).split(r.rootDir).join("<root>"),
+      ) as Record<string, unknown>;
+      delete clone["timing"];
+      delete clone["rootDir"];
+      const lockfile = clone["lockfile"] as Record<string, unknown>;
+      delete lockfile["path"];
+      for (const testResult of clone["results"] as Record<string, unknown>[]) {
+        delete testResult["timing"];
+      }
+      return clone;
+    };
+    expect(strip(timed)).toEqual(strip(untimed));
   }, T);
 
   it("plain `playwright test` is unaffected (adapter no-op without vibehard env)", async () => {

@@ -141,6 +141,8 @@ dist
 test-results/
 playwright-report/
 .vh-test-*/
+.vh-perf-*/
+.vh-perf-*.manifest.json
 
 # Cypress run artifacts
 cypress/screenshots/

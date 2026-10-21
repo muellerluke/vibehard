@@ -1,3 +1,6 @@
+export { formatPhaseTimings } from "./timing.js";
+export type { PhaseTiming } from "./timing.js";
+
 /** Stable symbol ID: `<relative-file>#<qualified-name>`, e.g. `src/lib/cart.ts#Cart.addItem`. */
 export type SymbolId = string;
 
@@ -146,6 +149,7 @@ export type {
   ServersSession,
   SpawnCaptureResult,
   StaticDiscoveryOptions,
+  TestTiming,
   TestVerifyResult,
   TouchKind,
   TouchedSet,

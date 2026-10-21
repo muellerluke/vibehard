@@ -13,7 +13,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "perf": "npm run build && npm run perf -w vibehard --"
   },
   "devDependencies": {
     "eslint": "^9.17.0",

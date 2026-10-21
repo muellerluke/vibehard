@@ -106,6 +106,28 @@ describe("AT-01: CLI", () => {
     expect(r.stdout).toContain("Usage: vibehard");
   }, 240_000);
 
+  it("--timing is documented and accepted only by record/verify/test", async () => {
+    const help = await runCli(["--help"]);
+    expect(help.stdout).toContain("--timing");
+    const empty = mkdtempSync(path.join(tmpdir(), "vibehard-cli-"));
+    tempDirs.push(empty);
+    for (const argv of [
+      ["test", "--dry-run", "--timing", "--config", "missing.json"],
+      ["verify", "--timing", "--config", "missing.json"],
+      ["record", "--timing", "--config", "missing.json"],
+    ]) {
+      const r = await runCli(argv, { cwd: empty });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("config not found");
+      expect(r.stderr).not.toContain("unknown option");
+    }
+    for (const argv of [["init", "--timing"], ["explain", "x", "--timing"]]) {
+      const r = await runCli(argv, { cwd: empty });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("unknown option --timing");
+    }
+  });
+
   it("--json produces parseable output", async () => {
     const r = await runCli(["--version", "--json"]);
     expect(r.exitCode).toBe(0);

@@ -187,6 +187,101 @@ export function findEnclosingSymbol(
   return best;
 }
 
+/**
+ * Parse-only per-file extraction: the same `extractSymbols` used by
+ * `indexProject`, fed from `ts.createSourceFile` instead of a Program.
+ * Selection uses this so its cost stays proportional to the files it
+ * actually needs; `indexProject` remains the implementation of record
+ * for building touched sets (it alone computes `references`).
+ */
+export interface ParsedFile {
+  /** `extractSymbols` output for the file (pre-dedupe, no references). */
+  symbols: SymbolRecord[];
+  /** Project-relative POSIX paths of assets this file imports. */
+  assetFiles: string[];
+}
+
+export interface ProjectParser {
+  readonly typescriptVersion: string;
+  /** Parse one file's text (never reads disk). */
+  parseFile(relPosix: string, text: string): ParsedFile;
+}
+
+/** Create a parser bound to the target project's own TypeScript copy. */
+export function createProjectParser(rootDir: string): ProjectParser {
+  const tsApi = loadTypeScript(path.resolve(rootDir));
+  return {
+    typescriptVersion: tsApi.version,
+    parseFile(relPosix: string, text: string): ParsedFile {
+      const sourceFile = tsApi.createSourceFile(
+        relPosix,
+        text,
+        tsApi.ScriptTarget.Latest,
+        true,
+        scriptKindForFile(tsApi, relPosix),
+      );
+      return {
+        symbols: extractSymbols(tsApi, sourceFile, relPosix),
+        assetFiles: assetFilesInFile(tsApi, sourceFile, relPosix),
+      };
+    },
+  };
+}
+
+function scriptKindForFile(tsApi: typeof ts, relPosix: string): ts.ScriptKind {
+  if (/\.tsx$/i.test(relPosix)) return tsApi.ScriptKind.TSX;
+  if (/\.jsx$/i.test(relPosix)) return tsApi.ScriptKind.JSX;
+  if (/\.[cm]?js$/i.test(relPosix)) return tsApi.ScriptKind.JS;
+  return tsApi.ScriptKind.TS;
+}
+
+/**
+ * The tsconfig-included file list (POSIX, project-relative, indexable
+ * only), without constructing a Program. This is the set
+ * `parseJsonConfigFileContent` reports; files a Program would pull in
+ * transitively through imports are not listed.
+ */
+export function loadProjectFileList(rootDir: string, tsconfigPath?: string): string[] {
+  const root = path.resolve(rootDir);
+  const tsApi = loadTypeScript(root);
+  const { fileNames } = loadProgramInputs(tsApi, root, tsconfigPath);
+  const out = new Set<string>();
+  for (const fileName of fileNames) {
+    const rel = relativePosix(root, fileName);
+    if (rel !== null && isIndexablePath(rel)) out.add(rel);
+  }
+  return [...out].sort();
+}
+
+/** True for files the indexer treats as app source (TS/JS, no `.d.ts`). */
+export function isIndexableFile(relPosix: string): boolean {
+  return isIndexablePath(relPosix);
+}
+
+/** Dedupe by symbol ID (earliest in source order wins), sorted by ID. */
+export function dedupeSymbols(symbols: readonly SymbolRecord[]): SymbolRecord[] {
+  return dedupeAndSort([...symbols]);
+}
+
+/** Build the `<file>` asset record for one asset path. */
+export function makeAssetRecord(
+  relPosix: string,
+  byteLength: number,
+  lineCount: number,
+): SymbolRecord {
+  return {
+    id: `${relPosix}#<file>`,
+    file: relPosix,
+    qualifiedName: "<file>",
+    kind: "asset",
+    startOffset: 0,
+    endOffset: byteLength,
+    startLine: 1,
+    endLine: Math.max(1, lineCount),
+    references: [],
+  };
+}
+
 /** Prefer the target project's own TypeScript copy; fall back to ours. */
 function loadTypeScript(rootDir: string): typeof ts {
   try {
@@ -825,26 +920,86 @@ function isAssetSpecifier(specifier: string): boolean {
   return ASSET_EXTENSIONS.has(ext);
 }
 
-function resolveAssetFile(
-  root: string,
-  fromFileRel: string,
-  specifier: string,
-): string | null {
+/** True when a project-relative path has an asset extension. */
+export function hasAssetExtension(relPosix: string): boolean {
+  return isAssetSpecifier(relPosix);
+}
+
+/**
+ * Resolve an asset import specifier to a project-relative POSIX path
+ * by path math alone (no filesystem access), or null when the
+ * specifier is a bare package import or escapes the project root.
+ * Mirrors `resolveAssetFile` without its on-disk existence check.
+ */
+export function resolveAssetSpecifier(fromFileRel: string, specifier: string): string | null {
   if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
     // Bare specifiers resolve into packages; only project-relative
     // asset imports become symbols (package changes stay full-run).
     if (!specifier.startsWith("@/")) return null;
   }
   const raw = specifier.split(/[?#]/)[0] ?? specifier;
-  const clean = raw.replace(/^@\//, "src/");
-  const abs = clean.startsWith("/")
-    ? path.resolve(root, `.${clean}`)
-    : raw.startsWith("@/")
-      ? path.resolve(root, clean)
-      : path.resolve(root, path.posix.dirname(fromFileRel), clean);
-  const rel = relativePosix(root, abs);
-  if (rel === null || !existsSync(abs) || !statSync(abs).isFile()) return null;
+  let joined: string;
+  if (raw.startsWith("@/")) joined = `src/${raw.slice(2)}`;
+  else if (raw.startsWith("/")) joined = raw.slice(1);
+  else joined = path.posix.join(path.posix.dirname(fromFileRel), raw);
+  const segments: string[] = [];
+  for (const segment of joined.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  if (segments.length === 0 || segments.includes("node_modules")) return null;
+  return segments.join("/");
+}
+
+/** `resolveAssetSpecifier` plus an on-disk existence check. */
+function resolveAssetFile(
+  root: string,
+  fromFileRel: string,
+  specifier: string,
+): string | null {
+  const rel = resolveAssetSpecifier(fromFileRel, specifier);
+  if (rel === null) return null;
+  const abs = path.resolve(root, rel);
+  if (!existsSync(abs) || !statSync(abs).isFile()) return null;
   return rel;
+}
+
+/** Asset paths imported by one parsed file (sorted, deduplicated). */
+function assetFilesInFile(
+  tsApi: typeof ts,
+  sourceFile: ts.SourceFile,
+  rel: string,
+): string[] {
+  const out = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    let specifier: string | null = null;
+    if (
+      (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) &&
+      node.moduleSpecifier !== undefined &&
+      tsApi.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specifier = node.moduleSpecifier.text;
+    } else if (
+      tsApi.isCallExpression(node) &&
+      node.expression.kind === tsApi.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      tsApi.isStringLiteral(node.arguments[0])
+    ) {
+      specifier = node.arguments[0].text;
+    }
+    if (specifier !== null && isAssetSpecifier(specifier)) {
+      const assetRel = resolveAssetSpecifier(rel, specifier);
+      if (assetRel !== null) out.add(assetRel);
+    }
+    tsApi.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...out].sort();
 }
 
 function collectAssetSymbols(
@@ -854,53 +1009,22 @@ function collectAssetSymbols(
 ): SymbolRecord[] {
   const byId = new Map<string, SymbolRecord>();
   for (const [rel, sourceFile] of sourceFilesByRel) {
-    const visit = (node: ts.Node): void => {
-      let specifier: string | null = null;
-      if (
-        (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) &&
-        node.moduleSpecifier !== undefined &&
-        tsApi.isStringLiteral(node.moduleSpecifier)
-      ) {
-        specifier = node.moduleSpecifier.text;
-      } else if (
-        tsApi.isCallExpression(node) &&
-        node.expression.kind === tsApi.SyntaxKind.ImportKeyword &&
-        node.arguments.length > 0 &&
-        tsApi.isStringLiteral(node.arguments[0])
-      ) {
-        specifier = node.arguments[0].text;
+    for (const assetRel of assetFilesInFile(tsApi, sourceFile, rel)) {
+      const id = `${assetRel}#<file>`;
+      if (byId.has(id)) continue;
+      const abs = path.resolve(root, assetRel);
+      if (!existsSync(abs) || !statSync(abs).isFile()) continue;
+      let length = 0;
+      let lines = 1;
+      try {
+        const data = readFileSync(abs);
+        length = data.length;
+        lines = Math.max(1, data.toString("utf8").split("\n").length);
+      } catch {
+        // existsSync was checked above
       }
-      if (specifier !== null && isAssetSpecifier(specifier)) {
-        const assetRel = resolveAssetFile(root, rel, specifier);
-        if (assetRel !== null) {
-          const id = `${assetRel}#<file>`;
-          if (!byId.has(id)) {
-            let length = 0;
-            let lines = 1;
-            try {
-              const data = readFileSync(path.resolve(root, assetRel));
-              length = data.length;
-              lines = Math.max(1, data.toString("utf8").split("\n").length);
-            } catch {
-              // existsSync was checked in resolveAssetFile
-            }
-            byId.set(id, {
-              id,
-              file: assetRel,
-              qualifiedName: "<file>",
-              kind: "asset",
-              startOffset: 0,
-              endOffset: length,
-              startLine: 1,
-              endLine: lines,
-              references: [],
-            });
-          }
-        }
-      }
-      tsApi.forEachChild(node, visit);
-    };
-    visit(sourceFile);
+      byId.set(id, makeAssetRecord(assetRel, length, lines));
+    }
   }
   return [...byId.values()];
 }

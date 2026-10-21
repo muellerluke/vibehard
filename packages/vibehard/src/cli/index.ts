@@ -9,6 +9,7 @@ import {
   formatTestReport,
   testProject,
 } from "../selector/index.js";
+import { timingEnabled } from "../timing.js";
 import {
   VibehardUsageError,
   formatVerifyReport,
@@ -45,6 +46,11 @@ Options:
                merge-base with the configured baseBranch, else HEAD)
   --all        test: skip selection and run the full suite
   --dry-run    test: print the selected tests and reasons without running
+  --timing     record/verify/test: report phase timings
+               (or set VIBEHARD_PROFILE=1)
+  --fast-select test/explain: diff-proportional selection without a
+               full index (or set VIBEHARD_FAST_SELECT=1); falls back
+               to full indexing on any inconsistency
 
 record and verify accept optional filter arguments matched against
 test file paths and titles. explain takes one test filter or symbol ID
@@ -69,12 +75,24 @@ export async function runCli(
   const ci = argv.includes("--ci");
   const all = argv.includes("--all");
   const dryRun = argv.includes("--dry-run");
+  const timingFlag = argv.includes("--timing");
+  const timing = timingFlag || timingEnabled(undefined);
+  const fastSelectFlag = argv.includes("--fast-select");
   let configPath: string | undefined;
   let baseRef: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
-    if (arg === "--json" || arg === "--ci" || arg === "--all" || arg === "--dry-run") continue;
+    if (
+      arg === "--json" ||
+      arg === "--ci" ||
+      arg === "--all" ||
+      arg === "--dry-run" ||
+      arg === "--timing" ||
+      arg === "--fast-select"
+    ) {
+      continue;
+    }
     if (arg === "--config" || arg === "--base") {
       const value = argv[i + 1];
       if (arg === "--config") configPath = value;
@@ -119,6 +137,12 @@ export async function runCli(
   }
 
   if (cmd === "init") {
+    if (timingFlag) {
+      return fail(3, "vibehard init: unknown option --timing", cmd);
+    }
+    if (fastSelectFlag) {
+      return fail(3, "vibehard init: unknown option --fast-select", cmd);
+    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard init: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -143,6 +167,9 @@ export async function runCli(
   }
 
   if (cmd === "record" || cmd === "verify") {
+    if (fastSelectFlag) {
+      return fail(3, `vibehard ${cmd}: unknown option --fast-select`, cmd);
+    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard ${cmd}: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -153,6 +180,7 @@ export async function runCli(
         ...(configPath !== undefined ? { configPath } : {}),
         ...(rest.length > 0 ? { filter: rest } : {}),
         ci: cmd === "verify" && ci,
+        timing,
       });
       return {
         exitCode: result.exitCode,
@@ -183,8 +211,10 @@ export async function runCli(
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
         ...(baseRef !== undefined ? { baseRef } : {}),
+        ...(fastSelectFlag ? { fastSelect: true } : {}),
         all,
         dryRun,
+        timing,
       });
       return {
         exitCode: result.exitCode,
@@ -201,6 +231,9 @@ export async function runCli(
   }
 
   if (cmd === "explain") {
+    if (timingFlag) {
+      return fail(3, "vibehard explain: unknown option --timing", cmd);
+    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard explain: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -211,6 +244,7 @@ export async function runCli(
       const result = await explainProject({
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
+        ...(fastSelectFlag ? { fastSelect: true } : {}),
         query: rest[0] ?? "",
       });
       return {
@@ -250,8 +284,16 @@ const isMain = ((): boolean => {
 if (isMain) {
   void (async () => {
     const r = await runCli(process.argv.slice(2));
-    if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
-    if (r.stderr) process.stderr.write(r.stderr.endsWith("\n") ? r.stderr : `${r.stderr}\n`);
+    // Exit only after writes flush: process.exit immediately after an
+    // async pipe write truncates large output (e.g. --json results).
+    const writeAll = (stream: NodeJS.WriteStream, text: string): Promise<void> =>
+      text === ""
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+            stream.write(text.endsWith("\n") ? text : `${text}\n`, () => resolve());
+          });
+    await writeAll(process.stdout, r.stdout);
+    await writeAll(process.stderr, r.stderr);
     process.exit(r.exitCode);
   })();
 }

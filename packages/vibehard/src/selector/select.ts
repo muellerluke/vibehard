@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import type { SymbolId, SymbolRecord } from "../index.js";
 import { indexProject, INDEXER_VERSION } from "../indexer/index.js";
+import { PhaseTimer, timingEnabled } from "../timing.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
 import { getFrameworkDriver } from "../verifier/driver.js";
 import {
@@ -27,6 +28,7 @@ import {
   resolveGitRoot,
   type ChangedFile,
 } from "./git.js";
+import { fastSelectEnabled, selectTestsFast } from "./fast-select.js";
 import type {
   DiscoveredTestRef,
   SelectedTest,
@@ -140,21 +142,52 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
  * Compute the exact test selection for the working tree against a base
  * revision. Never guesses: anything that cannot be mapped to symbols (or
  * to a trusted lockfile) is reported as an unsafe reason instead.
+ *
+ * With `fastSelect` enabled, the diff-proportional path in
+ * `fast-select.ts` runs first; any failure there falls back to the
+ * full-index algorithm below, with a diagnostic recording the
+ * fallback (a genuine usage error is re-raised by the full path).
  */
 export async function selectTests(options: SelectOptions): Promise<SelectionResult> {
+  if (fastSelectEnabled(options.fastSelect)) {
+    try {
+      return await selectTestsFast(options);
+    } catch (error) {
+      const result = await selectTestsFull(options);
+      result.diagnostics.unshift(
+        `fast selection unavailable (${error instanceof Error ? error.message : String(error)}); used full indexing`,
+      );
+      return result;
+    }
+  }
+  return selectTestsFull(options);
+}
+
+async function selectTestsFull(options: SelectOptions): Promise<SelectionResult> {
+  const timer = new PhaseTimer(timingEnabled(options.timing));
   const rootDir = path.resolve(options.rootDir);
-  const resolved = await loadConfig(rootDir, options.configPath);
+  const resolved = await timer.run("config.load", () => loadConfig(rootDir, options.configPath));
   const diagnostics: string[] = [];
   const unsafeReasons: string[] = [];
 
-  const gitRoot = await resolveGitRoot(rootDir);
-  const base = await resolveBase(gitRoot, {
-    ...(options.baseRef !== undefined ? { baseRef: options.baseRef } : {}),
-    ...(resolved.baseBranch !== undefined ? { baseBranch: resolved.baseBranch } : {}),
+  const { gitRoot, base } = await timer.run("git.base", async () => {
+    const gitRoot = await resolveGitRoot(rootDir);
+    const base = await resolveBase(gitRoot, {
+      ...(options.baseRef !== undefined ? { baseRef: options.baseRef } : {}),
+      ...(resolved.baseBranch !== undefined ? { baseBranch: resolved.baseBranch } : {}),
+    });
+    return { gitRoot, base };
   });
 
-  const changedFiles: ChangedFile[] = await listChangedFiles(gitRoot, base.sha);
-  const patches = parseUnifiedDiff(await diffPatch(gitRoot, base.sha), gitRoot.prefix);
+  const changedFiles: ChangedFile[] = await timer.run(
+    "git.changedFiles",
+    () => listChangedFiles(gitRoot, base.sha),
+    (files) => ({ files: files.length }),
+  );
+  const patchText = await timer.run("git.diffPatch", () => diffPatch(gitRoot, base.sha), (text) => ({
+    bytes: Buffer.byteLength(text),
+  }));
+  const patches = timer.runSync("diff.parse", () => parseUnifiedDiff(patchText, gitRoot.prefix));
   const patchByFile = new Map<string, FilePatch>();
   for (const patch of patches) {
     const key = patch.newFile ?? patch.oldFile;
@@ -162,25 +195,43 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
   }
 
   const driver = getFrameworkDriver(resolved.config.framework);
-  const discovered = await driver.listTests(rootDir, resolved);
+  const discovered = await timer.run(
+    "tests.discovery",
+    () => driver.listTests(rootDir, resolved),
+    (tests) => ({ tests: tests.length }),
+  );
   const discoveredIds = new Set(discovered.map((t) => t.testId));
   const specFiles = new Set(discovered.map((t) => t.relFile));
 
-  const headIndex = await indexProject(rootDir);
+  const headIndex = await timer.run("index.head", () => indexProject(rootDir), (index) => ({
+    files: index.stats.filesTotal,
+    filesParsed: index.stats.filesParsed,
+    symbols: index.symbols.length,
+  }));
   const headSymbols = filterSymbols(headIndex.symbols, resolved);
-  const headHashes = hashOrEmpty(rootDir, headSymbols);
+  const headHashes = timer.runSync("hash.head", () => hashOrEmpty(rootDir, headSymbols), {
+    symbols: headSymbols.length,
+  });
 
   let baseSymbols: SymbolRecord[] = [];
   let baseHashes: Record<string, string> = {};
   let baseRoot: string | null = null;
   let worktree: Awaited<ReturnType<typeof createBaseWorktree>> | null = null;
   try {
-    worktree = await createBaseWorktree(gitRoot, base.sha);
+    worktree = await timer.run("git.baseWorktree.create", () =>
+      createBaseWorktree(gitRoot, base.sha),
+    );
     if (baseProjectExists(worktree)) {
       baseRoot = worktree.projectRoot;
-      const baseIndex = await indexProject(baseRoot);
+      const baseIndex = await timer.run("index.base", () => indexProject(baseRoot as string), (index) => ({
+        files: index.stats.filesTotal,
+        filesParsed: index.stats.filesParsed,
+        symbols: index.symbols.length,
+      }));
       baseSymbols = filterSymbols(baseIndex.symbols, resolved);
-      baseHashes = hashOrEmpty(baseRoot, baseSymbols);
+      baseHashes = timer.runSync("hash.base", () => hashOrEmpty(baseRoot as string, baseSymbols), {
+        symbols: baseSymbols.length,
+      });
     } else {
       diagnostics.push("project root does not exist at the base revision; every file is new");
     }
@@ -200,6 +251,7 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
     if (s.kind === "asset") assetFiles.add(s.file);
   }
 
+  const endChangedSymbols = timer.span("selection.changedSymbols");
   try {
     for (const change of changedFiles) {
       const kind = classifyChangedFile(change.file, {
@@ -254,30 +306,51 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
       }
     }
   } finally {
-    if (worktree !== null) await worktree.cleanup();
+    endChangedSymbols({
+      files: changedFiles.length,
+      symbols: changedSymbols.size,
+    });
+    if (worktree !== null) {
+      await timer.run("git.baseWorktree.cleanup", () => worktree.cleanup());
+    }
   }
 
   let lock: VibehardLockfile | null = null;
   let lockError: string | null = null;
+  const endLockLoad = timer.span("lockfile.load");
+  let lockBytes = 0;
   try {
-    lock = existsSync(resolved.lockfilePath) ? readLockfile(resolved.lockfilePath) : null;
+    if (existsSync(resolved.lockfilePath)) {
+      if (timer.enabled) lockBytes = statSync(resolved.lockfilePath).size;
+      lock = readLockfile(resolved.lockfilePath);
+    }
   } catch (error) {
     lockError = error instanceof Error ? error.message : String(error);
+  } finally {
+    const entries = lock === null ? [] : Object.values(lock.tests);
+    endLockLoad({
+      bytes: lockBytes,
+      tests: entries.length,
+      edges: entries.reduce((sum, entry) => sum + Object.keys(entry.touched).length, 0),
+    });
   }
-  unsafeReasons.push(
-    ...lockfileTrustReasons({
-      lock,
-      lockError,
-      resolved,
-      rootDir,
-      frameworkName: driver.name,
-      frameworkVersion: driver.version(rootDir),
-      discoveredIds,
-      baseHashes,
-      headHashes,
-    }),
-  );
+  timer.runSync("lockfile.trust", () => {
+    unsafeReasons.push(
+      ...lockfileTrustReasons({
+        lock,
+        lockError,
+        resolved,
+        rootDir,
+        frameworkName: driver.name,
+        frameworkVersion: driver.version(rootDir),
+        discoveredIds,
+        baseHashes,
+        headHashes,
+      }),
+    );
+  });
 
+  const endIntersect = timer.span("selection.intersect");
   const selected: SelectedTest[] = [];
   for (const test of discovered) {
     const reasons: SelectionReason[] = [];
@@ -300,6 +373,7 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
     }
     if (reasons.length > 0) selected.push({ ...toRef(test), reasons });
   }
+  endIntersect({ tests: discovered.length, selected: selected.length });
 
   return {
     base,
@@ -310,5 +384,6 @@ export async function selectTests(options: SelectOptions): Promise<SelectionResu
     unsafeReasons,
     unsafeReason: unsafeReasons[0] ?? null,
     diagnostics,
+    ...(timer.enabled ? { timing: timer.snapshot() } : {}),
   };
 }

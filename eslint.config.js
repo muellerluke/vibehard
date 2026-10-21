@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/test-results/**",
       "**/playwright-report/**",
       ".vh-test-*/**",
+      ".vh-perf-*/**",
     ],
   },
   ...tseslint.configs.recommended,

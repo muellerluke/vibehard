@@ -1,5 +1,6 @@
 import type { SymbolId } from "../index.js";
 import type { UnmappableScript } from "../observer/index.js";
+import type { PhaseTiming } from "../timing.js";
 import type { TouchedSet } from "./touched.js";
 
 /** Options written next to a test. The only escape hatch is `alwaysRun`. */
@@ -23,6 +24,15 @@ export type TestVerifyStatus =
   | "unstable"
   | "error";
 
+/** Per-test observation timings; present only when timing was requested. */
+export interface TestTiming {
+  observationCount: number;
+  /** Subphase totals aggregated across this test's observations. */
+  phases: PhaseTiming[];
+  /** Raw per-observation phase lists, in observation order. */
+  observations: PhaseTiming[][];
+}
+
 export interface TestVerifyResult {
   testId: string;
   /** POSIX path of the test file relative to the project root. */
@@ -43,6 +53,8 @@ export interface TestVerifyResult {
   unmappable: UnmappableScript[];
   diagnostics: string[];
   alwaysRun: string | null;
+  /** Observation timings; present only when timing was requested. */
+  timing?: TestTiming;
 }
 
 export interface ProjectVerifyResult {
@@ -61,6 +73,8 @@ export interface ProjectVerifyResult {
     alwaysRunCount: number;
   };
   diagnostics: string[];
+  /** Phase timings; present only when timing was requested. */
+  timing?: PhaseTiming[];
 }
 
 export interface VerifyProjectOptions {
@@ -69,6 +83,8 @@ export interface VerifyProjectOptions {
   /** Substring filters matched against test file or title; OR-ed. */
   filter?: string[];
   ci?: boolean;
+  /** Collect phase timings into the result. Defaults to `VIBEHARD_PROFILE`. */
+  timing?: boolean;
 }
 
 /** Usage/config errors: the CLI maps these to exit code 3. */

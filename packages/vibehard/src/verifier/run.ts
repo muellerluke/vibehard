@@ -19,6 +19,12 @@ import {
 } from "./lockfile.js";
 import { readArtifacts, type ListedTest } from "./listed.js";
 import { startServers } from "./servers.js";
+import {
+  PhaseTimer,
+  formatPhaseTimings,
+  timingEnabled,
+  type PhaseTiming,
+} from "../timing.js";
 import { computeTouchedSet, diffTouchedSets, type TouchedSet } from "./touched.js";
 import {
   VibehardUsageError,
@@ -48,8 +54,11 @@ async function runProject(
   mode: "verify" | "record",
   options: VerifyProjectOptions,
 ): Promise<ProjectVerifyResult> {
+  const timer = new PhaseTimer(timingEnabled(options.timing));
   const rootDir = path.resolve(options.rootDir);
-  const resolved: ResolvedConfig = await loadConfig(rootDir, options.configPath);
+  const resolved: ResolvedConfig = await timer.run("config.load", () =>
+    loadConfig(rootDir, options.configPath),
+  );
   if (resolved.config.app?.external === true) {
     throw new VibehardUsageError(
       "vibehard: app.external cannot be verified or recorded (per-test server coverage needs Vibehard to start the app); remove external for verify/record — `vibehard test` accepts it",
@@ -57,13 +66,23 @@ async function runProject(
   }
   const ci = mode === "verify" && (options.ci ?? false);
 
-  const index = await indexProject(rootDir);
+  const index = await timer.run("index", () => indexProject(rootDir), (result) => ({
+    files: result.stats.filesTotal,
+    filesParsed: result.stats.filesParsed,
+    symbols: result.symbols.length,
+  }));
   const symbols = filterSymbols(index.symbols, resolved);
-  const allHashes = hashSymbolSources(rootDir, symbols);
+  const allHashes = timer.runSync("hash.allSymbols", () => hashSymbolSources(rootDir, symbols), {
+    symbols: symbols.length,
+  });
   const driver = getFrameworkDriver(resolved.config.framework);
   const frameworkVersion = driver.version(rootDir);
 
-  const discovered = await driver.listTests(rootDir, resolved);
+  const discovered = await timer.run(
+    "tests.discovery",
+    () => driver.listTests(rootDir, resolved),
+    (tests) => ({ tests: tests.length }),
+  );
   const filters = options.filter ?? [];
   const selected = discovered.filter(
     (t) =>
@@ -82,7 +101,9 @@ async function runProject(
   // A missing lockfile is drift per test, not a usage error; an
   // unreadable (e.g. v1) lockfile fails closed from readLockfile.
   const existingLock: VibehardLockfile | null =
-    mode === "verify" ? readLockfile(resolved.lockfilePath) : null;
+    mode === "verify"
+      ? timer.runSync("lockfile.load", () => readLockfile(resolved.lockfilePath))
+      : null;
 
   const generated = resolveGeneratedPaths(resolved);
   const runTemp = mkdtempSync(path.join(tmpdir(), "vibehard-run-"));
@@ -95,6 +116,7 @@ async function runProject(
 
   const results: TestVerifyResult[] = [];
   const entries = new Map<string, LockfileTestEntry>();
+  const endObservations = timer.span("observation.total");
   try {
     for (const test of selected) {
       const result = await runOneTest({
@@ -108,11 +130,13 @@ async function runProject(
         resolveMapFile,
         resolveRules,
         existingEntry: existingLock?.tests[test.testId] ?? null,
+        timer,
       });
       results.push(result.result);
       if (result.entry !== null) entries.set(test.testId, result.entry);
     }
   } finally {
+    endObservations({ tests: results.length });
     rmSync(runTemp, { recursive: true, force: true });
   }
 
@@ -126,6 +150,7 @@ async function runProject(
     ["drift", "unstable", "unmappable", "error"].includes(r.status),
   );
 
+  const endLockfilePhase = timer.span("lockfile.checkOrWrite");
   if (mode === "verify" && ci) {
     drift = checkLockfile(existingLock, {
       configHash: resolved.configHash,
@@ -158,6 +183,7 @@ async function runProject(
       freshOnUnreadable: true,
     });
   }
+  endLockfilePhase();
 
   const exitCode: 0 | 1 | 2 = hasTestFailure
     ? 1
@@ -181,6 +207,7 @@ async function runProject(
       alwaysRunCount,
     },
     diagnostics,
+    ...(timer.enabled ? { timing: timer.snapshot() } : {}),
   };
 }
 
@@ -226,6 +253,7 @@ interface RunOneInput {
   resolveMapFile: string;
   resolveRules: { urlEndsWith: string; path: string }[];
   existingEntry: LockfileTestEntry | null;
+  timer: PhaseTimer;
 }
 
 interface Observation {
@@ -239,35 +267,45 @@ interface Observation {
   skipped: boolean;
   artifactMissing: string | null;
   errors: string[];
+  timing: PhaseTiming[];
 }
 
 async function observeOnce(input: RunOneInput): Promise<Observation> {
   const { test, resolved, rootDir } = input;
+  const obsTimer = new PhaseTimer(input.timer.enabled);
   const artifactDir = mkdtempSync(path.join(tmpdir(), "vibehard-art-"));
   try {
-    const servers = await startServers(resolved);
+    const servers = await obsTimer.run("observation.serverStart", () =>
+      startServers(resolved),
+    );
     let run: Awaited<ReturnType<FrameworkDriver["runSingleTest"]>>;
     let serverScripts: ScriptInput[] = [];
     try {
-      run = await input.driver.runSingleTest({
-        rootDir,
-        resolved,
-        test,
-        env: {
-          VIBEHARD_ARTIFACT_DIR: artifactDir,
-          VIBEHARD_RESOLVE_MAP: input.resolveMapFile,
-          ...servers.env,
-        },
-      });
+      run = await obsTimer.run("observation.frameworkRun", () =>
+        input.driver.runSingleTest({
+          rootDir,
+          resolved,
+          test,
+          env: {
+            VIBEHARD_ARTIFACT_DIR: artifactDir,
+            VIBEHARD_RESOLVE_MAP: input.resolveMapFile,
+            ...servers.env,
+          },
+        }),
+      );
     } finally {
-      serverScripts = await servers.stop().catch(() => []);
+      serverScripts = await obsTimer.run("observation.serverStop", async () =>
+        servers.stop().catch(() => []),
+      );
     }
 
+    const endArtifactRead = obsTimer.span("observation.artifactRead");
     const artifacts = readArtifacts(artifactDir);
     const artifact =
       artifacts.find((a) => sameFile(a.file, test.file) && a.line === test.line) ??
       artifacts.find((a) => sameFile(a.file, test.file) && a.title === test.title) ??
       (artifacts.length === 1 ? artifacts[0] : undefined);
+    endArtifactRead();
 
     const testFailed =
       run.exitCode !== 0 ||
@@ -292,6 +330,7 @@ async function observeOnce(input: RunOneInput): Promise<Observation> {
         skipped: false,
         artifactMissing: "no artifact",
         errors: [],
+        timing: obsTimer.snapshot(false),
       };
     }
 
@@ -302,29 +341,35 @@ async function observeOnce(input: RunOneInput): Promise<Observation> {
       const rule = input.resolveRules.find((r) => script.url.endsWith(r.urlEndsWith));
       return rule === undefined ? script : { ...script, sourcePath: rule.path };
     });
-    let observed = observeScripts([...clientScripts, ...serverScripts], {
-      rootDir,
-      symbols: input.symbols,
-      appGeneratedPaths: input.generated,
+    const observed = obsTimer.runSync("observation.coverageMap", () => {
+      let result = observeScripts([...clientScripts, ...serverScripts], {
+        rootDir,
+        symbols: input.symbols,
+        appGeneratedPaths: input.generated,
+      });
+      if (artifact.istanbul !== undefined) {
+        result = mergeObservedSets(
+          result,
+          observeIstanbul(artifact.istanbul as IstanbulCoverage | null, {
+            rootDir,
+            symbols: input.symbols,
+          }),
+        );
+      } else if (input.driver.name === "cypress") {
+        result = mergeObservedSets(
+          result,
+          observeIstanbul(null, { rootDir, symbols: input.symbols }),
+        );
+      }
+      return result;
     });
-    if (artifact.istanbul !== undefined) {
-      observed = mergeObservedSets(
-        observed,
-        observeIstanbul(artifact.istanbul as IstanbulCoverage | null, {
-          rootDir,
-          symbols: input.symbols,
-        }),
-      );
-    } else if (input.driver.name === "cypress") {
-      observed = mergeObservedSets(
-        observed,
-        observeIstanbul(null, { rootDir, symbols: input.symbols }),
-      );
-    }
+    const touched = obsTimer.runSync("observation.touchedCompute", () =>
+      computeTouchedSet(observed.merged, input.symbols),
+    );
 
     return {
       observed: observed.merged,
-      touched: computeTouchedSet(observed.merged, input.symbols),
+      touched,
       ok: observed.ok,
       unmappable: observed.unmappable,
       diagnostics: observed.diagnostics.filter((d) => !d.startsWith("excluded script:")),
@@ -333,6 +378,7 @@ async function observeOnce(input: RunOneInput): Promise<Observation> {
       skipped: artifact.status === "skipped",
       artifactMissing: null,
       errors: artifact.errors,
+      timing: obsTimer.snapshot(false),
     };
   } finally {
     rmSync(artifactDir, { recursive: true, force: true });
@@ -374,7 +420,39 @@ async function runOneTest(
     alwaysRun: null,
   };
 
+  const testTimer = new PhaseTimer(input.timer.enabled);
+  const observations: PhaseTiming[][] = [];
+  const noteObservation = (observation: Observation): void => {
+    if (!input.timer.enabled) return;
+    observations.push(observation.timing);
+    testTimer.absorb(observation.timing);
+    input.timer.absorb(observation.timing);
+    base.timing = {
+      observationCount: observations.length,
+      phases: testTimer.snapshot(false),
+      observations: [...observations],
+    };
+  };
+  const makeEntry = (touched: TouchedSet, alwaysRun: string | null): LockfileTestEntry => {
+    const hashTimer = new PhaseTimer(input.timer.enabled);
+    const entry = hashTimer.runSync("observation.hashTouched", () =>
+      entryFor(input, touched, alwaysRun),
+    );
+    if (input.timer.enabled) {
+      const phases = hashTimer.snapshot(false);
+      testTimer.absorb(phases);
+      input.timer.absorb(phases);
+      base.timing = {
+        observationCount: observations.length,
+        phases: testTimer.snapshot(false),
+        observations: [...observations],
+      };
+    }
+    return entry;
+  };
+
   const first = await observeOnce(input);
+  noteObservation(first);
   base.observed = first.observed;
   base.touched = first.touched;
   base.unmappable = first.unmappable;
@@ -401,7 +479,7 @@ async function runOneTest(
   if (first.alwaysRun !== null) {
     base.status = "always-run";
     base.touched = {};
-    return { result: base, entry: entryFor(input, {}, first.alwaysRun) };
+    return { result: base, entry: makeEntry({}, first.alwaysRun) };
   }
   if (!first.ok) {
     base.status = "unmappable";
@@ -413,6 +491,7 @@ async function runOneTest(
     // Record observes twice: a touched set that is not reproducible
     // is reported unstable and never written.
     const second = await observeOnce(input);
+    noteObservation(second);
     if (second.testFailed || second.artifactMissing !== null) {
       base.status = second.testFailed ? "test-failed" : "error";
       base.touched = null;
@@ -436,7 +515,7 @@ async function runOneTest(
       return { result: base, entry: null };
     }
     base.status = "recorded";
-    return { result: base, entry: entryFor(input, first.touched, null) };
+    return { result: base, entry: makeEntry(first.touched, null) };
   }
 
   // verify mode: drift is any difference from the stored touched set.
@@ -451,7 +530,7 @@ async function runOneTest(
   base.removed = diff.removed;
   if (diff.added.length === 0 && diff.removed.length === 0) {
     base.status = "pass";
-    return { result: base, entry: entryFor(input, first.touched, null) };
+    return { result: base, entry: makeEntry(first.touched, null) };
   }
   base.status = "drift";
   return { result: base, entry: null };
@@ -479,6 +558,29 @@ export function formatVerifyReport(result: ProjectVerifyResult): string {
   }
   for (const d of result.lockfile.drift) lines.push(`lockfile drift: ${d}`);
   for (const d of result.diagnostics) lines.push(d);
+  const timingText = formatPhaseTimings("timing", result.timing);
+  if (timingText !== "") {
+    lines.push(timingText.trimEnd());
+    const slowest = result.results
+      .flatMap((r) =>
+        r.timing === undefined
+          ? []
+          : [
+              {
+                testId: r.testId,
+                totalMs: r.timing.phases.reduce((sum, p) => sum + p.durationMs, 0),
+              },
+            ],
+      )
+      .sort((a, b) => b.totalMs - a.totalMs)
+      .slice(0, 10);
+    if (slowest.length > 0) {
+      lines.push("slowest tests (observation):");
+      for (const entry of slowest) {
+        lines.push(`  ${entry.testId}  ${entry.totalMs.toFixed(2)} ms`);
+      }
+    }
+  }
   lines.push(
     `${result.mode}: ${result.summary.passed} passed, ${result.summary.failed} failed, ${result.summary.total} total; alwaysRun: ${result.summary.alwaysRunCount} test(s); lockfile ${result.lockfile.written ? "updated" : "unchanged"} (${result.lockfile.path})`,
   );

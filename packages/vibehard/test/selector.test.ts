@@ -458,6 +458,60 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     expect(selection.changedSymbols).toEqual([POST]);
     expect(selectedIds(selection)).toEqual([COUPON_ID]);
   }, T);
+
+  it("Phase 0 timing: phases are reported and selection is unchanged", async () => {
+    const dir = await makeGitCopy();
+    edit(dir, "src/app/api/coupons/route.ts", (t) =>
+      t.replace("{ ok: true, code: body.code }", "{ ok: true, code: body.code, via: \"api\" }"));
+
+    const timed = await testProject({ rootDir: dir, dryRun: true, timing: true });
+    expect(timed.exitCode).toBe(0);
+    expect(timed.selection?.timing?.map((p) => p.name)).toEqual(
+      expect.arrayContaining([
+        "config.load",
+        "git.base",
+        "git.changedFiles",
+        "git.diffPatch",
+        "tests.discovery",
+        "index.head",
+        "hash.head",
+        "git.baseWorktree.create",
+        "index.base",
+        "hash.base",
+        "selection.changedSymbols",
+        "git.baseWorktree.cleanup",
+        "lockfile.load",
+        "lockfile.trust",
+        "selection.intersect",
+        "total",
+      ]),
+    );
+    expect(timed.timing?.map((p) => p.name)).toEqual(
+      expect.arrayContaining(["config.load", "selection", "total"]),
+    );
+    const head = timed.selection?.timing?.find((p) => p.name === "index.head");
+    expect(head?.details?.files).toBeGreaterThan(0);
+    expect(head?.details?.symbols).toBeGreaterThan(0);
+    const lock = timed.selection?.timing?.find((p) => p.name === "lockfile.load");
+    expect(lock?.details?.edges).toBeGreaterThan(0);
+
+    const untimed = await testProject({ rootDir: dir, dryRun: true, timing: false });
+    expect(untimed.timing).toBeUndefined();
+    expect(untimed.selection?.timing).toBeUndefined();
+    const strip = (r: TestProjectResult): unknown => {
+      const clone = JSON.parse(JSON.stringify(r)) as Record<string, unknown>;
+      delete clone["timing"];
+      const selection = clone["selection"] as Record<string, unknown> | null;
+      if (selection !== null) delete selection["timing"];
+      return clone;
+    };
+    expect(strip(timed)).toEqual(strip(untimed));
+
+    const human = await runCli(["test", "--dry-run", "--timing"], { cwd: dir });
+    expect(human.exitCode).toBe(0);
+    expect(human.stdout).toContain("timing (selection):");
+    expect(human.stdout).toContain("index.head");
+  }, T);
 });
 
 // --- integration: runner delegation and explain ---------------------------

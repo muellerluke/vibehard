@@ -1,0 +1,80 @@
+name: Perf
+
+# Phase 0 benchmark harness. Deliberately non-blocking: benchmark
+# steps use continue-on-error and this workflow is not a required
+# check. Reports are uploaded as artifacts for trend inspection.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 6 * * 1"
+  pull_request:
+    paths:
+      - "packages/vibehard/src/**"
+      - "packages/vibehard/perf/**"
+      - "packages/vibehard/test/timing.test.ts"
+      - "packages/vibehard/test/perf-fixture.test.ts"
+      - "packages/vibehard/package.json"
+      - "package.json"
+      - ".github/workflows/perf.yml"
+
+jobs:
+  selection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Choose preset
+        id: preset
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "name=smoke" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=large" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Selection perf (${{ steps.preset.outputs.name }})
+        continue-on-error: true
+        run: >-
+          npm run perf -w vibehard --
+          --preset ${{ steps.preset.outputs.name }}
+          --repetitions 5
+          --out perf-report-selection.json
+      - name: Upload selection report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-selection-${{ steps.preset.outputs.name }}
+          path: perf-report-selection.json
+          if-no-files-found: ignore
+
+  record:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: packages/vibehard
+        run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Record perf (record-smoke)
+        continue-on-error: true
+        run: >-
+          npm run perf -w vibehard --
+          --preset record-smoke
+          --out perf-report-record.json
+      - name: Upload record report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-record-smoke
+          path: perf-report-record.json
+          if-no-files-found: ignore

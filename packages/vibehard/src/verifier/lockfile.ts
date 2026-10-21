@@ -27,6 +27,25 @@ export interface VibehardLockfile {
   tests: Record<string, LockfileTestEntry>;
 }
 
+/** Hash one symbol against its file's text (slice or hash slices). */
+function hashRecordText(text: string, record: SymbolRecord): string {
+  const hash = createHash("sha256");
+  if (record.hashSlices !== undefined) {
+    for (const slice of record.hashSlices) {
+      hash.update(text.slice(slice.startOffset, slice.endOffset));
+      hash.update("\0");
+    }
+  } else {
+    hash.update(text.slice(record.startOffset, record.endOffset));
+  }
+  return hash.digest("hex");
+}
+
+/** Hash an asset symbol's raw bytes. */
+export function hashAssetBytes(data: Uint8Array): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
 /**
  * Hash the current source of every given symbol (file read once).
  * Executable/value symbols hash their exact source slice; module
@@ -48,23 +67,33 @@ export function hashSymbolSources(
     let text: string | null = null;
     for (const record of records) {
       if (record.kind === "asset") {
-        out[record.id] = createHash("sha256")
-          .update(readFileSync(path.resolve(rootDir, file)))
-          .digest("hex");
+        out[record.id] = hashAssetBytes(readFileSync(path.resolve(rootDir, file)));
         continue;
       }
       if (text === null) text = readFileSync(path.resolve(rootDir, file), "utf8");
-      const hash = createHash("sha256");
-      if (record.hashSlices !== undefined) {
-        for (const slice of record.hashSlices) {
-          hash.update(text.slice(slice.startOffset, slice.endOffset));
-          hash.update("\0");
-        }
-      } else {
-        hash.update(text.slice(record.startOffset, record.endOffset));
-      }
-      out[record.id] = hash.digest("hex");
+      out[record.id] = hashRecordText(text, record);
     }
+  }
+  return out;
+}
+
+/**
+ * Hash non-asset symbols against in-memory file texts, exactly as
+ * `hashSymbolSources` would against the same texts on disk. Symbols
+ * whose file has no supplied text are omitted (callers treat a
+ * missing hash as a mismatch). Asset symbols are skipped: hash them
+ * with `hashAssetBytes` over the raw bytes.
+ */
+export function hashSymbolTexts(
+  textsByFile: ReadonlyMap<string, string>,
+  symbols: readonly SymbolRecord[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const record of symbols) {
+    if (record.kind === "asset") continue;
+    const text = textsByFile.get(record.file);
+    if (text === undefined) continue;
+    out[record.id] = hashRecordText(text, record);
   }
   return out;
 }

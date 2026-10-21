@@ -439,6 +439,11 @@ Gate: AT-22, AT-23, AT-24.
 
 ### Stage 7 — Hardening, performance, release
 
+Performance work for this stage is analysed and sequenced in
+[SCALING.md](SCALING.md) (diff-proportional selection, lockfile
+interning, parallel/sharded recording, delegation limits); deliverables
+below remain the stage definition.
+
 Deliverables: index and verification caching with correctness-preserving
 invalidation; parallel verification with per-test isolation guarantees;
 flaky-observed-set detection (same test, different observed set across two
@@ -548,6 +553,21 @@ Hardening:
 - AT-28: the packed npm tarball installs into a fresh copy of an example and
   passes `init` (already-wired detection), `verify`, and a one-symbol
   `test` selection without the monorepo present.
+- AT-S01: parse-only extraction equals `indexProject` extraction (minus
+  `references`) for every source file in the fixtures, examples, and
+  `packages/vibehard/src` (`test/parse-parity.test.ts`).
+- AT-S02: `--fast-select` selection equals full-index selection —
+  selected IDs, reasons, changed symbols, unsafe reasons — over a
+  mutation series on `fixtures/tiny-app` including asset, CRLF, and
+  git-ignored-touched cases (`test/fast-select.test.ts`).
+- AT-S03: with `--fast-select`, `vibehard test --dry-run` performs zero
+  TypeScript `Program` constructions and zero worktree creations
+  (asserted via Phase 0 timing phases and `git worktree list`).
+- AT-S04: on the generated `large` fixture (3,000 source files, 3,000
+  tests, K=150), `--fast-select` selection is measured against the
+  Phase 0 baseline in SCALING.md; the proposed budgets (≤2 s
+  cold-cache, ≤1 s warm, excluding discovery) are recorded there and
+  not yet enforced in CI.
 
 ## Validation Plan
 

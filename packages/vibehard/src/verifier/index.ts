@@ -50,8 +50,10 @@ export { VibehardUsageError } from "./types.js";
 export type {
   ProjectVerifyResult,
   RuntimeOptions,
+  TestTiming,
   TestVerifyResult,
   TestVerifyStatus,
   VerifyProjectOptions,
   VibehardTestOptions,
 } from "./types.js";
+export type { PhaseTiming } from "../timing.js";
