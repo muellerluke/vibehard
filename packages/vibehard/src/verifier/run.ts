@@ -5,6 +5,7 @@ import path from "node:path";
 import type { ScriptInput } from "../observer/types.js";
 import { indexProject, INDEXER_VERSION } from "../indexer/index.js";
 import { mergeObservedSets, observeIstanbul, observeScripts, type IstanbulCoverage } from "../observer/index.js";
+import { selectTests } from "../selector/select.js";
 import { filterSymbols, loadConfig, resolveGeneratedPaths, type ResolvedConfig } from "./config.js";
 import { getFrameworkDriver, type FrameworkDriver } from "./driver.js";
 import {
@@ -61,7 +62,40 @@ export async function verifyProject(options: VerifyProjectOptions): Promise<Proj
 }
 
 export async function recordProject(options: VerifyProjectOptions): Promise<ProjectVerifyResult> {
-  return runProject("record", options);
+  if (options.incremental !== true) return runProject("record", options);
+  // Incremental record: selection decides which tests could have
+  // changed touched sets (changed symbols, unrecorded tests, changed
+  // spec files, alwaysRun); only those are re-observed. Everything
+  // else keeps its recorded entry, which stays valid by the same
+  // argument selection itself uses. Any unsafe selection refuses the
+  // run — a full record is the only sound fallback.
+  if (options.shard !== undefined) {
+    throw new VibehardUsageError("vibehard: --incremental cannot be combined with --shard");
+  }
+  if ((options.filter ?? []).length > 0) {
+    throw new VibehardUsageError("vibehard: --incremental cannot be combined with test filters");
+  }
+  const selection = await selectTests({
+    rootDir: options.rootDir,
+    ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
+    ...(options.baseRef !== undefined ? { baseRef: options.baseRef } : {}),
+    ...(options.fastSelect !== undefined ? { fastSelect: options.fastSelect } : {}),
+    ...(options.timing !== undefined ? { timing: options.timing } : {}),
+  });
+  if (selection.unsafeReasons.length > 0) {
+    throw new VibehardUsageError(
+      `vibehard: incremental record requires a safe selection (${selection.unsafeReasons[0]}); run a full \`vibehard record\``,
+    );
+  }
+  return runProject(
+    "record",
+    { ...options, incremental: false },
+    {
+      testIds: selection.selected.map((t) => t.testId),
+      pruneUndiscovered: true,
+      incremental: true,
+    },
+  );
 }
 
 /**
@@ -129,10 +163,22 @@ function sameFile(a: string, b: string): boolean {
   }
 }
 
+interface RunProjectInternal {
+  /** Observe exactly these test IDs (incremental record subset). */
+  testIds?: readonly string[];
+  /** Prune lockfile entries discovery no longer finds, subset or not. */
+  pruneUndiscovered?: boolean;
+  incremental?: boolean;
+}
+
 async function runProject(
   mode: "verify" | "record",
   options: VerifyProjectOptions,
+  internal: RunProjectInternal = {},
 ): Promise<ProjectVerifyResult> {
+  if (mode === "verify" && options.incremental === true) {
+    throw new VibehardUsageError("vibehard: --incremental is only valid for record");
+  }
   const jobs = resolveJobs(options);
   const shard = options.shard ?? null;
   if (shard !== null) {
@@ -190,6 +236,20 @@ async function runProject(
   // unlucky hash split); it still writes its artifact so a merge can
   // prove the shard ran.
   if (shard !== null) selected = shardTests(selected, shard);
+  if (internal.testIds !== undefined) {
+    // Incremental subset: every selected ID must still be discovered,
+    // or a test selection said could have drifted would be skipped.
+    const wanted = new Set(internal.testIds);
+    const found = new Set(selected.filter((t) => wanted.has(t.testId)).map((t) => t.testId));
+    for (const testId of wanted) {
+      if (!found.has(testId)) {
+        throw new VibehardUsageError(
+          `vibehard: incremental selection named ${testId}, which discovery no longer finds; run a full \`vibehard record\``,
+        );
+      }
+    }
+    selected = selected.filter((t) => wanted.has(t.testId));
+  }
 
   // In verify mode the stored touched sets are the comparison target.
   // A missing lockfile is drift per test, not a usage error; an
@@ -277,7 +337,10 @@ async function runProject(
 
   // A filtered or sharded run observed a subset: it may merge its
   // entries but must never prune lockfile entries it did not observe.
+  // Incremental record is the exception: discovery ran in full, so
+  // entries discovery no longer finds are deleted tests and prune.
   const observedAllDiscovered = filters.length === 0 && shard === null;
+  const pruneUndiscovered = internal.pruneUndiscovered ?? observedAllDiscovered;
   let shardArtifactPath: string | null = null;
   const endLockfilePhase = timer.span("lockfile.checkOrWrite");
   if (mode === "record" && shard !== null) {
@@ -327,13 +390,13 @@ async function runProject(
     }
   } else if (mode === "verify" && !hasTestFailure && !hasFailure) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
-      fullRun: observedAllDiscovered,
+      fullRun: pruneUndiscovered,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
       freshOnUnreadable: false,
     });
-  } else if (mode === "record" && entries.size > 0) {
+  } else if (mode === "record" && (entries.size > 0 || internal.pruneUndiscovered === true)) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
-      fullRun: observedAllDiscovered,
+      fullRun: pruneUndiscovered,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
       freshOnUnreadable: true,
     });
@@ -353,7 +416,7 @@ async function runProject(
     jobs,
     shard,
     shardArtifact: shardArtifactPath,
-    incremental: false,
+    incremental: internal.incremental ?? false,
     ci,
     exitCode,
     rootDir,
@@ -716,6 +779,11 @@ export function formatVerifyReport(result: ProjectVerifyResult): string {
     for (const d of r.diagnostics) lines.push(`  ${d}`);
   }
   for (const d of result.lockfile.drift) lines.push(`lockfile drift: ${d}`);
+  if (result.incremental) {
+    lines.push(
+      "incremental record: only change-selected tests were re-observed (pair with periodic full `vibehard verify`)",
+    );
+  }
   if (result.shardArtifact !== null && result.shard !== null) {
     lines.push(
       `shard ${formatShardSpec(result.shard)}: wrote ${result.shardArtifact} (lockfile untouched; merge with \`vibehard record --merge\`)`,

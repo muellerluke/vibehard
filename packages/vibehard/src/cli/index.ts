@@ -62,6 +62,8 @@ Options:
                vibehard-shard-<i>-of-<n>.json in the project root)
   --merge      record: merge shard artifact files given as arguments
                into the lockfile (observes nothing)
+  --incremental record: re-record only tests selected by the change
+               set (--base applies); refuses when selection is unsafe
 
 record and verify accept optional filter arguments matched against
 test file paths and titles. explain takes one test filter or symbol ID
@@ -91,6 +93,8 @@ export async function runCli(
   const fastSelectFlag = argv.includes("--fast-select");
   const jobsFlag = argv.includes("--jobs") || argv.some((a) => a.startsWith("--jobs="));
   const mergeFlag = argv.includes("--merge");
+  const incrementalFlag = argv.includes("--incremental");
+  const baseFlag = argv.includes("--base") || argv.some((a) => a.startsWith("--base="));
   const shardFlag = argv.includes("--shard") || argv.some((a) => a.startsWith("--shard="));
   const shardOutFlag =
     argv.includes("--shard-out") || argv.some((a) => a.startsWith("--shard-out="));
@@ -109,7 +113,8 @@ export async function runCli(
       arg === "--dry-run" ||
       arg === "--timing" ||
       arg === "--fast-select" ||
-      arg === "--merge"
+      arg === "--merge" ||
+      arg === "--incremental"
     ) {
       continue;
     }
@@ -178,6 +183,9 @@ export async function runCli(
   }
 
   if (cmd === "init") {
+    if (incrementalFlag) {
+      return fail(3, "vibehard init: unknown option --incremental", cmd);
+    }
     if (mergeFlag) {
       return fail(3, "vibehard init: unknown option --merge", cmd);
     }
@@ -220,8 +228,17 @@ export async function runCli(
   }
 
   if (cmd === "record" || cmd === "verify") {
-    if (fastSelectFlag) {
+    if (fastSelectFlag && !(cmd === "record" && incrementalFlag)) {
       return fail(3, `vibehard ${cmd}: unknown option --fast-select`, cmd);
+    }
+    if (incrementalFlag && cmd === "verify") {
+      return fail(3, "vibehard verify: unknown option --incremental", cmd);
+    }
+    if (baseFlag && !(cmd === "record" && incrementalFlag)) {
+      return fail(3, `vibehard ${cmd}: --base is only valid for record --incremental`, cmd);
+    }
+    if (incrementalFlag && baseFlag && (baseRef === undefined || baseRef === "")) {
+      return fail(3, "vibehard record: --base requires a ref", cmd);
     }
     if (mergeFlag && cmd === "verify") {
       return fail(3, "vibehard verify: unknown option --merge", cmd);
@@ -243,8 +260,8 @@ export async function runCli(
       return fail(3, `vibehard ${cmd}: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
     if (mergeFlag) {
-      if (jobsFlag || shardFlag || shardOutFlag || ci) {
-        return fail(3, "vibehard record: --merge cannot be combined with --jobs, --shard, --shard-out, or --ci", cmd);
+      if (jobsFlag || shardFlag || shardOutFlag || ci || incrementalFlag) {
+        return fail(3, "vibehard record: --merge cannot be combined with --jobs, --shard, --shard-out, --incremental, or --ci", cmd);
       }
       if (rest.length === 0) {
         return fail(3, "vibehard record: --merge requires at least one shard artifact file", cmd);
@@ -278,6 +295,9 @@ export async function runCli(
         ...(jobs !== undefined ? { jobs } : {}),
         ...(shard !== undefined ? { shard } : {}),
         ...(shardOut !== undefined ? { shardOut } : {}),
+        ...(incrementalFlag ? { incremental: true } : {}),
+        ...(incrementalFlag && baseRef !== undefined ? { baseRef } : {}),
+        ...(incrementalFlag && fastSelectFlag ? { fastSelect: true } : {}),
         ci: cmd === "verify" && ci,
         timing,
       });
@@ -296,6 +316,9 @@ export async function runCli(
   }
 
   if (cmd === "test") {
+    if (incrementalFlag) {
+      return fail(3, "vibehard test: unknown option --incremental", cmd);
+    }
     if (mergeFlag) {
       return fail(3, "vibehard test: unknown option --merge", cmd);
     }
@@ -342,6 +365,9 @@ export async function runCli(
   }
 
   if (cmd === "explain") {
+    if (incrementalFlag) {
+      return fail(3, "vibehard explain: unknown option --incremental", cmd);
+    }
     if (mergeFlag) {
       return fail(3, "vibehard explain: unknown option --merge", cmd);
     }
