@@ -33,6 +33,17 @@ import {
   type VerifyProjectOptions,
 } from "./types.js";
 
+/** Validate the `--jobs` lane count; shared by record and verify. */
+export function resolveJobs(options: VerifyProjectOptions): number {
+  const jobs = options.jobs ?? 1;
+  if (!Number.isInteger(jobs) || jobs < 1) {
+    throw new VibehardUsageError(
+      `vibehard: --jobs must be a positive integer (got ${String(options.jobs)})`,
+    );
+  }
+  return jobs;
+}
+
 export async function verifyProject(options: VerifyProjectOptions): Promise<ProjectVerifyResult> {
   return runProject("verify", options);
 }
@@ -54,6 +65,7 @@ async function runProject(
   mode: "verify" | "record",
   options: VerifyProjectOptions,
 ): Promise<ProjectVerifyResult> {
+  const jobs = resolveJobs(options);
   const timer = new PhaseTimer(timingEnabled(options.timing));
   const rootDir = path.resolve(options.rootDir);
   const resolved: ResolvedConfig = await timer.run("config.load", () =>
@@ -118,23 +130,54 @@ async function runProject(
   const entries = new Map<string, LockfileTestEntry>();
   const endObservations = timer.span("observation.total");
   try {
-    for (const test of selected) {
-      const result = await runOneTest({
-        mode,
-        rootDir,
-        resolved,
-        driver,
-        test,
-        symbols,
-        generated,
-        resolveMapFile,
-        resolveRules,
-        existingEntry: existingLock?.tests[test.testId] ?? null,
-        timer,
-      });
-      results.push(result.result);
-      if (result.entry !== null) entries.set(test.testId, result.entry);
+    // Lane pool: `jobs` workers pull tests from the selected list and
+    // each runs the unchanged per-test observation (own servers, own
+    // framework process, record-twice in record mode). Outcomes are
+    // slotted by selected index and replayed in discovered order, so
+    // results, reports, and lockfile bytes match a serial run. A test
+    // failure never cancels sibling tests; a thrown usage error
+    // (e.g. a server that cannot start) stops scheduling, settles
+    // in-flight observations, and propagates like a serial run.
+    const outcomes: ({ result: TestVerifyResult; entry: LockfileTestEntry | null } | undefined)[] =
+      new Array(selected.length).fill(undefined);
+    let nextIndex = 0;
+    let fatal: unknown = null;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (fatal !== null) return;
+        const index = nextIndex;
+        nextIndex += 1;
+        const test = selected[index];
+        if (test === undefined) return;
+        try {
+          outcomes[index] = await runOneTest({
+            mode,
+            rootDir,
+            resolved,
+            driver,
+            test,
+            symbols,
+            generated,
+            resolveMapFile,
+            resolveRules,
+            existingEntry: existingLock?.tests[test.testId] ?? null,
+            timer,
+          });
+        } catch (error) {
+          if (fatal === null) fatal = error;
+          return;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.max(1, Math.min(jobs, selected.length)) }, () => worker()),
+    );
+    for (const outcome of outcomes) {
+      if (outcome === undefined) continue;
+      results.push(outcome.result);
+      if (outcome.entry !== null) entries.set(outcome.result.testId, outcome.entry);
     }
+    if (fatal !== null) throw fatal;
   } finally {
     endObservations({ tests: results.length });
     rmSync(runTemp, { recursive: true, force: true });
@@ -195,6 +238,10 @@ async function runProject(
   return {
     ok: exitCode === 0,
     mode,
+    jobs,
+    shard: null,
+    shardArtifact: null,
+    incremental: false,
     ci,
     exitCode,
     rootDir,

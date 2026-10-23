@@ -45,11 +45,12 @@ export { puppeteerDriver } from "./puppeteer-runner.js";
 export { cypressDriver, encodeOnlyTitles, resolveCypressCli, ENV_ONLY_TITLES } from "./cypress-runner.js";
 export { discoverInFile, discoverStaticTests, findSpecFiles } from "./discovery.js";
 export type { StaticDiscoveryOptions } from "./discovery.js";
-export { formatVerifyReport, recordProject, verifyProject } from "./run.js";
+export { formatVerifyReport, recordProject, resolveJobs, verifyProject } from "./run.js";
 export { VibehardUsageError } from "./types.js";
 export type {
   ProjectVerifyResult,
   RuntimeOptions,
+  ShardSpec,
   TestTiming,
   TestVerifyResult,
   TestVerifyStatus,

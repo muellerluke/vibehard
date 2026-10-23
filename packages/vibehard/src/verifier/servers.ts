@@ -84,13 +84,45 @@ function spawnCaptureRaw(
   });
 }
 
+/**
+ * Ports handed out by `freePort` that no listener has claimed yet.
+ * Probing closes the socket before the real server binds, so without
+ * this registry two concurrent lanes could be handed the same port.
+ * `startServers` releases its ports once its servers are listening
+ * (the OS then keeps them unavailable); other callers may release
+ * explicitly with `releasePort` once their own listener is up.
+ */
+const reservedPorts = new Set<number>();
+
+function probePort(port: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(null));
+    server.listen(port, "127.0.0.1", () => {
+      const address = server.address();
+      const found = typeof address === "object" && address !== null ? address.port : 0;
+      server.close(() => resolve(found === 0 ? null : found));
+    });
+  });
+}
+
 export async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : 0;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    // The first probe asks the OS for any ephemeral port. If it offers
+    // one another lane has reserved, probe an explicit random port
+    // instead of asking again (the OS may offer the same port twice).
+    const candidate =
+      attempt === 0 ? await probePort(0) : await probePort(20_000 + Math.floor(Math.random() * 40_000));
+    if (candidate === null || reservedPorts.has(candidate)) continue;
+    reservedPorts.add(candidate);
+    return candidate;
+  }
+  throw new VibehardUsageError("vibehard: could not find a free TCP port");
+}
+
+/** Release a `freePort` reservation (its listener is up, or abandoned). */
+export function releasePort(port: number): void {
+  reservedPorts.delete(port);
 }
 
 export interface AppServerSession {
@@ -201,9 +233,34 @@ async function startEntry(
  * every process (including workers a server itself spawns, which
  * inherit NODE_V8_COVERAGE) is merged on stop.
  */
-export async function startServers(
+/**
+ * Server starts are serialized process-wide: between a port probe and
+ * the child actually listening there is a window where the port looks
+ * free, and parallel record lanes must not allocate inside another
+ * lane's window. Test execution itself is not serialized — the lock
+ * ends as soon as every server in the session accepts connections.
+ */
+let startChain: Promise<unknown> = Promise.resolve();
+
+function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = startChain.then(fn, fn);
+  startChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export function startServers(
   resolved: ResolvedConfig,
   fixedPorts: Readonly<Record<string, number>> = {},
+): Promise<ServersSession> {
+  return withStartLock(() => startServersLocked(resolved, fixedPorts));
+}
+
+async function startServersLocked(
+  resolved: ResolvedConfig,
+  fixedPorts: Readonly<Record<string, number>>,
 ): Promise<ServersSession> {
   const entries = serverEntries(resolved);
   const ports: Record<string, number> = {};
@@ -214,6 +271,7 @@ export async function startServers(
   const app = resolved.config.app;
   if (app !== undefined && app.external === true) {
     if (app.url.includes("{port}")) {
+      for (const port of Object.values(ports)) releasePort(port);
       throw new VibehardUsageError(
         "vibehard: app.url contains {port} but app is external (Vibehard assigns no port to an external app); use a literal URL or {port:<server>}",
       );
@@ -237,8 +295,12 @@ export async function startServers(
     }
   } catch (error) {
     await stopStarted().catch(() => []);
+    for (const port of Object.values(ports)) releasePort(port);
     throw error;
   }
+  // Every server is listening now, so the OS keeps these ports busy
+  // and the `freePort` reservations can go.
+  for (const port of Object.values(ports)) releasePort(port);
   const baseUrl = urls["app"] ?? null;
   const env: Record<string, string> = {};
   if (baseUrl !== null) env["VIBEHARD_BASE_URL"] = baseUrl;

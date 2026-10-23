@@ -51,6 +51,8 @@ Options:
   --fast-select test/explain: diff-proportional selection without a
                full index (or set VIBEHARD_FAST_SELECT=1); falls back
                to full indexing on any inconsistency
+  --jobs <n>   record/verify: observe up to <n> tests concurrently
+               (default 1; the app must tolerate <n> instances)
 
 record and verify accept optional filter arguments matched against
 test file paths and titles. explain takes one test filter or symbol ID
@@ -78,8 +80,10 @@ export async function runCli(
   const timingFlag = argv.includes("--timing");
   const timing = timingFlag || timingEnabled(undefined);
   const fastSelectFlag = argv.includes("--fast-select");
+  const jobsFlag = argv.includes("--jobs") || argv.some((a) => a.startsWith("--jobs="));
   let configPath: string | undefined;
   let baseRef: string | undefined;
+  let jobsRaw: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
@@ -93,10 +97,11 @@ export async function runCli(
     ) {
       continue;
     }
-    if (arg === "--config" || arg === "--base") {
+    if (arg === "--config" || arg === "--base" || arg === "--jobs") {
       const value = argv[i + 1];
       if (arg === "--config") configPath = value;
-      else baseRef = value;
+      else if (arg === "--base") baseRef = value;
+      else jobsRaw = value;
       i += 1;
       continue;
     }
@@ -106,6 +111,10 @@ export async function runCli(
     }
     if (arg.startsWith("--base=")) {
       baseRef = arg.slice("--base=".length);
+      continue;
+    }
+    if (arg.startsWith("--jobs=")) {
+      jobsRaw = arg.slice("--jobs=".length);
       continue;
     }
     args.push(arg);
@@ -137,6 +146,9 @@ export async function runCli(
   }
 
   if (cmd === "init") {
+    if (jobsFlag) {
+      return fail(3, "vibehard init: unknown option --jobs", cmd);
+    }
     if (timingFlag) {
       return fail(3, "vibehard init: unknown option --timing", cmd);
     }
@@ -170,6 +182,13 @@ export async function runCli(
     if (fastSelectFlag) {
       return fail(3, `vibehard ${cmd}: unknown option --fast-select`, cmd);
     }
+    let jobs: number | undefined;
+    if (jobsFlag) {
+      jobs = Number(jobsRaw);
+      if (jobsRaw === undefined || jobsRaw === "" || !Number.isInteger(jobs) || jobs < 1) {
+        return fail(3, `vibehard ${cmd}: --jobs must be a positive integer (got ${jobsRaw ?? ""})`, cmd);
+      }
+    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard ${cmd}: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -179,6 +198,7 @@ export async function runCli(
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
         ...(rest.length > 0 ? { filter: rest } : {}),
+        ...(jobs !== undefined ? { jobs } : {}),
         ci: cmd === "verify" && ci,
         timing,
       });
@@ -197,6 +217,9 @@ export async function runCli(
   }
 
   if (cmd === "test") {
+    if (jobsFlag) {
+      return fail(3, "vibehard test: unknown option --jobs", cmd);
+    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard test: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -231,6 +254,9 @@ export async function runCli(
   }
 
   if (cmd === "explain") {
+    if (jobsFlag) {
+      return fail(3, "vibehard explain: unknown option --jobs", cmd);
+    }
     if (timingFlag) {
       return fail(3, "vibehard explain: unknown option --timing", cmd);
     }

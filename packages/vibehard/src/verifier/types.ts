@@ -57,9 +57,23 @@ export interface TestVerifyResult {
   timing?: TestTiming;
 }
 
+/** One shard of a sharded run: shard `index` of `total` (1-based). */
+export interface ShardSpec {
+  index: number;
+  total: number;
+}
+
 export interface ProjectVerifyResult {
   ok: boolean;
   mode: "verify" | "record";
+  /** Observation lanes that were allowed to run concurrently. */
+  jobs: number;
+  /** Shard this run covered, or null for an unsharded run. */
+  shard: ShardSpec | null;
+  /** Shard artifact written instead of the lockfile (record --shard). */
+  shardArtifact: string | null;
+  /** True when the run re-recorded only the change-selected subset. */
+  incremental: boolean;
   ci: boolean;
   /** 0 pass, 1 test failure, 2 drift / instability / lockfile drift. */
   exitCode: 0 | 1 | 2;
@@ -83,6 +97,32 @@ export interface VerifyProjectOptions {
   /** Substring filters matched against test file or title; OR-ed. */
   filter?: string[];
   ci?: boolean;
+  /**
+   * Observation lanes running concurrently (record/verify). Each lane
+   * starts its own servers and framework processes, exactly like a
+   * serial run, so results are unchanged; the app under test must
+   * tolerate that many parallel instances. Defaults to 1.
+   */
+  jobs?: number;
+  /**
+   * Observe only this shard of the discovered tests (stable hash of
+   * test ID). A record shard writes a shard artifact (`shardOut`)
+   * instead of touching the lockfile; see `mergeShardArtifacts`.
+   */
+  shard?: ShardSpec;
+  /** Path for the shard artifact a `record --shard` run writes. */
+  shardOut?: string;
+  /**
+   * Record mode only: re-record only the tests selected by the
+   * current change set (plus unrecorded and spec-changed tests).
+   * Refuses when selection is unsafe; pair with periodic full
+   * `verify` runs. Defaults to false.
+   */
+  incremental?: boolean;
+  /** Base ref for `incremental` selection; defaults like `test`. */
+  baseRef?: string;
+  /** Use diff-proportional selection for `incremental`. */
+  fastSelect?: boolean;
   /** Collect phase timings into the result. Defaults to `VIBEHARD_PROFILE`. */
   timing?: boolean;
 }
