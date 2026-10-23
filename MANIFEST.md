@@ -288,9 +288,14 @@ It exists for genuinely unstable tests — the only remaining leniency.
 - `vibehard record [filter]` — run tests under observation (twice each),
   map touched symbols, update the lockfile. This is how suites adopt
   Vibehard, and how mappings are refreshed after intentional behavior changes.
+  At scale (SCALING.md Phase 3): `--jobs <n>` observes up to `<n>` tests
+  concurrently, `--shard <i>/<n>` observes one stable-hash slice and writes
+  a shard artifact that `record --merge <files…>` validates into the
+  lockfile, and `--incremental` re-records only the change-selected tests.
 - `vibehard verify [--ci]` — run tests under observation, fail on any
   touched-set drift or lockfile hash drift. `--ci` also fails on any
-  `alwaysRun` count above `alwaysRunBudget` (default: 0).
+  `alwaysRun` count above `alwaysRunBudget` (default: 0). `--jobs` and
+  `--shard` apply as for `record`.
 - `vibehard test [--base <ref>] [--all] [--dry-run]` — select and run only
   affected tests. Default base: merge-base with the configured base branch,
   falling back to `HEAD`. `--all` skips selection and runs the full suite.
@@ -576,6 +581,17 @@ Hardening:
   unchanged; v3 is at least 5× smaller on the synthetic scale case;
   corrupt v3 documents (bad indexes, unknown kinds, malformed hashes)
   are rejected (`test/lockfile-v3.test.ts`).
+- AT-S06: `record --jobs 4` and a merged 3-shard record
+  (`--shard <i>/3` + `record --merge`) each produce a lockfile
+  byte-identical to the serial record on `fixtures/tiny-app`, with
+  results in discovered order; merges with mismatched provenance,
+  missing/duplicate shards, or failed tests are refused without
+  writing (`test/record-lanes.test.ts`, `test/record-shards.test.ts`).
+- AT-S07: over leaf-edit/no-change/new-test/deleted-test mutations,
+  `record --incremental` followed by `verify --ci` reaches the same
+  lockfile and verdict as full record followed by `verify --ci`;
+  incremental record refuses when selection is unsafe or the
+  lockfile is missing (`test/record-incremental.test.ts`).
 
 ## Validation Plan
 

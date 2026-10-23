@@ -77,6 +77,26 @@ twice and refuses to record a test whose touched set is not
 reproducible. Verification is Chromium-only (Cypress client coverage
 comes from Istanbul instrumentation instead).
 
+For large suites, recording scales out without changing what is
+recorded (same per-test observation, byte-identical lockfiles):
+
+```bash
+vibehard record --jobs 4                    # observe up to 4 tests at once on this machine
+vibehard record --shard 1/3                 # one CI matrix job: writes vibehard-shard-1-of-3.json
+vibehard record --shard 2/3 --shard-out s2.json
+vibehard record --merge vibehard-shard-*.json  # validate all shards, write the lockfile once
+vibehard record --incremental               # re-record only tests this change selects
+```
+
+`--jobs` is opt-in (default `1`) because your app must tolerate that
+many parallel instances — ports are allocated for you, shared test
+databases and other fixed resources are yours to isolate. `verify`
+accepts `--jobs` and `--shard` too. `--incremental` refuses when
+selection is unsafe (run a full record), and should be paired with a
+scheduled full `vibehard verify` since it trusts the selection model
+for tests it does not re-observe. See [SCALING.md](SCALING.md) Phase 3
+for the merge contract and measurements.
+
 ## Usage (Puppeteer)
 
 The host runner is Node's built-in test runner (`node --test`).
@@ -198,7 +218,8 @@ Things that matter in a Next.js project:
 - **Cost**: recording and verification restart every config server per
   test (record observes each test twice), so a record of N tests boots
   your app 2N times. That is the soundness tradeoff; `vibehard test`
-  starts servers only once.
+  starts servers only once. `--jobs`, `--shard`, and `--incremental`
+  above divide the wall clock without changing that per-test cost.
 
 ## Development
 

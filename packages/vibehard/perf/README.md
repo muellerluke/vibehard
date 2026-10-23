@@ -53,7 +53,19 @@ npm run perf -- --preset large --fast-select --cold-cache
 source maps, Playwright specs that execute different generated
 modules in browser and server) and runs one real
 `vibehard record --timing`. It requires a Playwright Chromium
-install.
+install. Phase 3 lanes are measured with `--jobs <n>` (the runner
+fails if the record does not report that lane count):
+
+```bash
+npm run perf -- --preset record-smoke
+npm run perf -- --preset record-smoke --jobs 4
+```
+
+`--no-timing` runs the built CLI without `--timing` and reports
+external wall clock only. It exists to benchmark builds that
+predate the timing flags (with this harness copied in as untracked
+tooling) against current builds, as in the before/after table in
+SCALING.md.
 
 ## How to read the output
 

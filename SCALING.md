@@ -1,9 +1,12 @@
 # Scaling Vibehard to Large Repositories
 
-Status: **Phases 0–2 implemented** (Phase 1 shipped opt-in behind
+Status: **Phases 0–3 implemented** (Phase 1 shipped opt-in behind
 `--fast-select`; Phase 2 lockfile v3 auto-migrates v2 files on the
-next write; see "Phase 1 results" and "Phase 2 results" below).
-Phases 3–5 remain a proposal. This document collects the
+next write; Phase 3a–c ship `--jobs` lanes, `--shard`/`--merge`
+artifacts, and `record --incremental`; see the per-phase "results"
+sections below, including a before/after benchmark against the
+pre-scaling baseline under "Phase 3 results").
+Phases 4–5 remain a proposal. This document collects the
 performance analysis and the phased plan for making `vibehard` usable in
 repositories with thousands of e2e tests and thousands of source files.
 It is a companion to [MANIFEST.md](MANIFEST.md), whose Stage 7
@@ -796,6 +799,116 @@ attribution remains unambiguous. Only after 3d could client-side
 runs also be batched into one framework invocation per lane;
 do not batch before deltas exist.
 
+#### Phase 3 results (3a–c implemented, measured 2026-10-22)
+
+Implemented in `packages/vibehard/src/verifier/run.ts`,
+`packages/vibehard/src/verifier/shards.ts`, and
+`packages/vibehard/src/verifier/servers.ts`; CLI spellings (the open
+decision below, taken): `record`/`verify --jobs <n>`,
+`--shard <i>/<n>` (1-based), `--shard-out <file>`,
+`record --merge <files…>`, and `record --incremental [--base <ref>]
+[--fast-select]`. Results now report `jobs`, `shard`,
+`shardArtifact`, and `incremental`. Programmatically these are
+`VerifyProjectOptions.jobs`/`shard`/`shardOut`/`incremental`/
+`baseRef`/`fastSelect` and a new `mergeShardArtifacts`.
+
+- **3a lanes.** A bounded pool runs the unchanged per-test
+  observation (`runOneTest`/`observeOnce`: own servers, own
+  framework process, record-twice) and replays outcomes in
+  discovered order, so reports and lockfile bytes match a serial
+  run. Default `--jobs 1`. Two hazards the serial code hid are
+  fixed in `servers.ts`: `freePort` now reserves handed-out ports
+  until a listener claims one, and server starts are serialized
+  process-wide, so lanes cannot collide in the probe-to-bind
+  window. A thrown usage error stops scheduling, settles in-flight
+  observations, and propagates; ordinary test failures do not
+  cancel siblings.
+- **3b shards.** Assignment is `sha256(testId) mod n` over the
+  sorted discovered set. A record shard never touches the lockfile;
+  it writes one artifact (entries, per-test statuses, and
+  provenance: config hash, framework name/version, graph version,
+  HEAD + dirty source state, and a discovered-set fingerprint).
+  `record --merge` is a pure validation (`mergeShardArtifactList`)
+  plus one lockfile write: exactly one artifact per shard index,
+  agreeing provenance (checked again against the merging project's
+  current config/framework), only `recorded`/`always-run`
+  statuses, every entry provably in its shard, and a union equal
+  to the recorded discovered set — anything else is refused
+  without writing. Empty shards still write artifacts, so a merge
+  can prove they ran. `--shard` is refused with test filters.
+- **3c incremental.** `record --incremental` runs `selectTests`
+  first (honouring `--base`/`--fast-select`), refuses on any unsafe
+  reason (a missing lockfile included), then re-observes exactly
+  `selection.selected` — changed-symbol, unrecorded,
+  spec-changed, and alwaysRun tests — via an internal exact-ID
+  subset that errors if discovery loses a selected test. Because
+  discovery is complete, it also prunes entries for deleted tests;
+  with zero selected tests it observes nothing and only prunes.
+  The documented contract stands: pair it with a scheduled full
+  `verify`.
+
+Gates: AT-S06 passes as byte-identical lockfiles for `--jobs 4`
+vs `--jobs 1` plus repeated `--jobs 8` verifies
+(`test/record-lanes.test.ts`) and for a merged 3-shard record vs
+the serial record, with mismatched-provenance merges refused
+(`test/record-shards.test.ts`). AT-S07 passes over leaf-edit,
+no-change, new-test, and deleted-test mutations on a git copy of
+`fixtures/tiny-app` — incremental and full record reach identical
+lockfile bytes from the same starting lockfile, followed by a
+passing `verify --ci` — and refuses unsafe and missing-lockfile
+changes (`test/record-incremental.test.ts`).
+
+Recording numbers (`record-smoke`: 21 files, 183 symbols, 10
+tests, 134 edges; medians of 3 single runs, same machine as the
+table below): serial 30,868 ms at `--jobs 1`, 11,171 ms at
+`--jobs 4` (2.8× on 10 tests; per-phase `frameworkRun` time is
+summed across lanes, so only wall and `observation.total`
+≈9.7 s are comparable). Incremental on the same fixture after a
+one-module leaf edit (single run, lockfiles verified byte-identical):
+6,059 ms observing 1 test vs 30,118 ms observing all 10 — the
+remainder is selection, indexing, and discovery that an incremental
+record still pays in full today. 3d remains unimplemented.
+
+#### Before/after against the pre-scaling baseline (`819f5c7`)
+
+Measured 2026-10-22 on one machine in one session (Apple M1 Pro,
+macOS arm64, Node v23.5.0): BEFORE is a pristine detached worktree
+of `819f5c7` (v0.1.0, the last commit before scaling work), AFTER
+is `b4c7c49` (Phases 0–3) plus the perf-runner flags used here.
+The BEFORE tree has no perf harness, so the current
+`packages/vibehard/perf/*.mjs` were copied into it as untracked
+tooling only: every symbol ID, hash, and lockfile byte then comes
+from that tree's own build (its `writeLockfile` emits v2). Two
+shims were needed, neither touching the code under measurement:
+`--no-timing` (the flag does not exist at `819f5c7`), and capturing
+BEFORE `--json` through a temp file, because that CLI truncates
+large piped output (the bug Phase 0 fixed). Selection figures are
+medians of 5 runs after one warm-up, `leaf` scenario, external
+wall clock of `vibehard test --dry-run --json` (CLI startup and
+JSON output included); fast-path `selection total` is the
+AFTER-only timed phase. Record figures are medians of 3 single
+runs.
+
+| Preset | Before (v0.1.0) | After, full path | After, `--fast-select` warm | Lockfile before → after |
+|---|---|---|---|---|
+| smoke (100 tests, 5k edges) | 1,171 ms | 1,219 ms | 438 ms (selection 109 ms) | 811 KB → 186 KB (4.3×) |
+| default (1,000 tests, 100k edges) | 2,581 ms | 2,615 ms | 661 ms (selection 334 ms) | 16.0 MB → 2.4 MB (6.6×) |
+| large (3,000 tests, 450k edges) | 5,779 ms | 6,024 ms | 1,342 ms (selection 1,005 ms) | 71.9 MB → 8.9 MB (8.0×) |
+| large, fast cold cache | — | — | 1,955 ms (selection 1,616 ms) | 71.9 MB → 8.9 MB |
+| record-smoke (10 tests) | 29,937 ms serial | 30,868 ms `--jobs 1` | 11,171 ms `--jobs 4` | 23 KB → 12 KB |
+
+Reading it honestly: the default full selection path is *not*
+faster than before — batch medians at `large` ran 5.3–5.8 s
+before and 5.9–6.0 s after, because the algorithm is deliberately
+the same proof and v3 validation plus the inverted-index build
+roughly offset the smaller parse. The scaling wins are the ones
+the plan aimed at: `--fast-select` selection (still opt-in) is
+≈4.3× on wall clock at `large` and makes cost diff-proportional,
+lockfiles shrink 4–8× on every run path, recording divides by
+lanes/shards, and incremental record skips observation work the
+change cannot affect. The selected test IDs matched the
+generator's ground truth on both sides of every preset.
+
 ### Phase 4 — Delegation and output ceilings
 
 Independent small fixes in the drivers
@@ -978,8 +1091,10 @@ recall guard for Phases 1, 3, and 5.
 - Lockfile v3 physical layout: decided at Phase 2 — single compact
   file (see "Phase 2 results"); revisit the per-spec directory only
   if merge pain is reported.
-- CLI spellings for `--jobs`, `--shard`, and the merge command,
-  following the existing CLI conventions (`packages/vibehard/src/cli/index.ts`).
+- CLI spellings for `--jobs`, `--shard`, and the merge command:
+  decided at Phase 3 — `--jobs <n>`, `--shard <i>/<n>`,
+  `--shard-out <file>`, `record --merge <files…>`, and
+  `record --incremental` (see "Phase 3 results").
 - Where shard artifacts live in CI (uploaded artifacts vs committed
   temporary files) — affects only docs/recipes, not the format.
 - Whether discovery caching (Phase 4) is worth its invalidation

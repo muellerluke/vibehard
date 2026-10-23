@@ -68,6 +68,8 @@ function parseArgs(argv) {
     keep: false,
     fastSelect: false,
     coldCache: false,
+    jobs: 1,
+    timing: true,
     out: null,
     overrides: {},
   };
@@ -83,7 +85,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--help") {
       process.stdout.write(
-        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec] [--repetitions N] [--seed N] [--out FILE] [--keep] [--fast-select] [--cold-cache] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
+        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec] [--repetitions N] [--seed N] [--out FILE] [--keep] [--fast-select] [--cold-cache] [--jobs N] [--no-timing] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
       );
       process.exit(0);
     }
@@ -99,12 +101,17 @@ function parseArgs(argv) {
       opts.coldCache = true;
       continue;
     }
+    if (arg === "--no-timing") {
+      opts.timing = false;
+      continue;
+    }
     const value = argv[i + 1];
     if (value === undefined) throw new Error(`${arg} requires a value`);
     if (arg === "--preset") opts.preset = value;
     else if (arg === "--mode") opts.mode = value;
     else if (arg === "--scenario") opts.scenario = value;
     else if (arg === "--repetitions") opts.repetitions = Number(value);
+    else if (arg === "--jobs") opts.jobs = Number(value);
     else if (arg === "--seed") opts.seed = Number(value);
     else if (arg === "--out") opts.out = value;
     else if (numericOverrides[arg] !== undefined) opts.overrides[numericOverrides[arg]] = Number(value);
@@ -114,6 +121,9 @@ function parseArgs(argv) {
   if (PRESETS[opts.preset] === undefined) throw new Error(`unknown preset: ${opts.preset}`);
   if (!Number.isInteger(opts.repetitions) || opts.repetitions < 1) {
     throw new Error("--repetitions must be a positive integer");
+  }
+  if (!Number.isInteger(opts.jobs) || opts.jobs < 1) {
+    throw new Error("--jobs must be a positive integer");
   }
   return opts;
 }
@@ -187,8 +197,8 @@ function printSummary(report) {
   const lines = [];
   const selectionBits =
     report.mode === "selection"
-      ? `, scenario=${report.scenario}, fastSelect=${report.fastSelect}, coldCache=${report.coldCache}`
-      : "";
+      ? `, scenario=${report.scenario}, fastSelect=${report.fastSelect}, coldCache=${report.coldCache}, timing=${report.timing}`
+      : `, jobs=${report.jobs}, timing=${report.timing}`;
   lines.push(`perf ${report.preset} (${report.mode}${selectionBits})`);
   lines.push(
     `fixture: ${report.fixture.counts.sourceFiles} files, ${report.fixture.counts.symbols} symbols, ` +
@@ -228,6 +238,12 @@ async function main() {
   if (opts.coldCache && !opts.fastSelect) {
     throw new Error("--cold-cache requires --fast-select (the full path has no parse cache)");
   }
+  if (opts.jobs !== 1 && mode !== "record") {
+    throw new Error("--jobs applies to record mode only");
+  }
+  if (opts.fastSelect && !opts.timing) {
+    throw new Error("--fast-select engagement is proven via timing phases; drop --no-timing");
+  }
 
   const outDir = path.join(REPO_ROOT, `.vh-perf-run-${opts.preset}-s${opts.seed}`);
   const manifestPath = `${outDir}.manifest.json`;
@@ -255,7 +271,13 @@ async function main() {
           if (opts.coldCache) rmSync(cacheDir, { recursive: true, force: true });
           const { wallMs, parsed } = runCli(
             outDir,
-            ["test", "--dry-run", "--timing", "--json", ...(opts.fastSelect ? ["--fast-select"] : [])],
+            [
+              "test",
+              "--dry-run",
+              ...(opts.timing ? ["--timing"] : []),
+              "--json",
+              ...(opts.fastSelect ? ["--fast-select"] : []),
+            ],
             opts.fastSelect ? { VIBEHARD_FAST_SELECT: "1" } : {},
           );
           const selectedIds = (parsed.selection?.selected ?? []).map((t) => t.testId).sort();
@@ -295,15 +317,29 @@ async function main() {
         resetScenario(outDir, manifest, opts.scenario);
       }
     } else {
-      const { wallMs, parsed } = runCli(outDir, ["record", "--timing", "--json"]);
+      const { wallMs, parsed } = runCli(outDir, [
+        "record",
+        ...(opts.timing ? ["--timing"] : []),
+        ...(opts.jobs !== 1 ? ["--jobs", String(opts.jobs)] : []),
+        "--json",
+      ]);
+      if (opts.jobs !== 1 && parsed.jobs !== opts.jobs) {
+        throw new Error(`record reported jobs=${parsed.jobs}, expected ${opts.jobs}`);
+      }
       if (parsed.ok !== true && parsed.exitCode !== 0) {
         throw new Error(`record did not pass: ${JSON.stringify(parsed.summary)}`);
       }
       const lockfilePath = path.join(outDir, "vibehard.lock.json");
       if (existsSync(lockfilePath)) {
         const lock = JSON.parse(readFileSync(lockfilePath, "utf8"));
+        // v2 touched is symbol->kind; v3 touched is kind->index array.
         manifest.counts.edges = Object.values(lock.tests).reduce(
-          (sum, entry) => sum + Object.keys(entry.touched).length,
+          (sum, entry) =>
+            sum +
+            Object.values(entry.touched).reduce(
+              (inner, value) => inner + (Array.isArray(value) ? value.length : 1),
+              0,
+            ),
           0,
         );
         manifest.counts.lockfileBytes = readFileSync(lockfilePath).byteLength;
@@ -329,6 +365,8 @@ async function main() {
       mode,
       fastSelect: mode === "selection" ? opts.fastSelect : false,
       coldCache: mode === "selection" ? opts.coldCache : false,
+      jobs: mode === "record" ? opts.jobs : 1,
+      timing: opts.timing,
       scenario: mode === "selection" ? opts.scenario : null,
       repetitions: mode === "selection" ? opts.repetitions : 1,
       environment: {
