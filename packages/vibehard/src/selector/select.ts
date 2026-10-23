@@ -7,9 +7,11 @@ import { PhaseTimer, timingEnabled } from "../timing.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
 import { getFrameworkDriver } from "../verifier/driver.js";
 import {
+  buildSymbolTestIndex,
   frameworkVersion,
   hashSymbolSources,
   readLockfile,
+  type SymbolTestIndex,
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
 import type { ListedTest } from "../verifier/listed.js";
@@ -64,7 +66,7 @@ function hashOrEmpty(rootDir: string, symbols: readonly SymbolRecord[]): Record<
   return hashSymbolSources(rootDir, symbols);
 }
 
-function toRef(test: ListedTest): DiscoveredTestRef {
+export function toRef(test: ListedTest): DiscoveredTestRef {
   return {
     testId: test.testId,
     file: test.relFile,
@@ -85,6 +87,8 @@ interface TrustInput {
   discoveredIds: ReadonlySet<string>;
   baseHashes: Readonly<Record<string, string>>;
   headHashes: Readonly<Record<string, string>>;
+  /** Prebuilt inverted index over `lock`; built on demand when absent. */
+  symbolIndex?: SymbolTestIndex;
 }
 
 /**
@@ -123,34 +127,35 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
   let allBase = true;
   let allHead = true;
   // The verdict is a universal quantifier over distinct (symbol,
-  // expected hash) pairs — the same pair recurs once per touching
-  // test, so check each pair once. (Partial re-records can record
-  // one symbol under different hashes in different entries; those
-  // conflicts are checked per distinct expected hash.)
-  const checked = new Map<string, string | undefined>();
-  const conflicting = new Map<string, Set<string | undefined>>();
+  // expected hash) pairs among still-discovered tests — the same pair
+  // recurs once per touching test, so check each pair once via the
+  // inverted index. (Partial re-records can record one symbol under
+  // different hashes in different entries; those conflicts are
+  // checked per distinct expected hash.)
   const check = (id: string, expected: string | undefined): void => {
     if (expected === undefined || input.baseHashes[id] !== expected) allBase = false;
     if (expected === undefined || input.headHashes[id] !== expected) allHead = false;
   };
-  for (const [testId, entry] of Object.entries(input.lock.tests)) {
-    if (!input.discoveredIds.has(testId)) continue;
-    for (const id of Object.keys(entry.touched)) {
-      const expected = entry.symbolHashes[id];
-      if (!checked.has(id)) {
-        checked.set(id, expected);
+  const index = input.symbolIndex ?? buildSymbolTestIndex(input.lock);
+  for (const [id, refs] of index) {
+    // Almost every symbol carries one expected hash across all its
+    // tests; only conflicting partial re-records allocate a set.
+    let first: string | undefined;
+    let seenFirst = false;
+    let extra: Set<string | undefined> | undefined;
+    for (const ref of refs) {
+      if (!input.discoveredIds.has(ref.testId)) continue;
+      const expected = input.lock.tests[ref.testId]?.symbolHashes[id];
+      if (!seenFirst) {
+        first = expected;
+        seenFirst = true;
         check(id, expected);
-        continue;
-      }
-      if (checked.get(id) === expected) continue;
-      let seen = conflicting.get(id);
-      if (seen === undefined) {
-        seen = new Set<string | undefined>([checked.get(id)]);
-        conflicting.set(id, seen);
-      }
-      if (!seen.has(expected)) {
-        seen.add(expected);
-        check(id, expected);
+      } else if (expected !== first) {
+        extra ??= new Set<string | undefined>([first]);
+        if (!extra.has(expected)) {
+          extra.add(expected);
+          check(id, expected);
+        }
       }
     }
   }
@@ -160,6 +165,48 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
     );
   }
   return reasons;
+}
+
+/**
+ * Intersect changed symbols with recorded touched sets via the
+ * inverted index. Shared by the full-index and fast selection paths
+ * so both produce identical selections: tests stay in discovery
+ * order, and each test's reasons are ordered test-file-changed,
+ * always-run, then unrecorded or changed symbols sorted by ID.
+ */
+export function intersectSelection(input: {
+  discovered: readonly ListedTest[];
+  lock: VibehardLockfile | null;
+  symbolIndex: SymbolTestIndex;
+  changedSymbols: ReadonlySet<SymbolId>;
+  changedSpecFiles: ReadonlySet<string>;
+}): SelectedTest[] {
+  const changedReasons = new Map<string, SelectionReason[]>();
+  for (const id of [...input.changedSymbols].sort()) {
+    for (const ref of input.symbolIndex.get(id) ?? []) {
+      const list = changedReasons.get(ref.testId) ?? [];
+      list.push({ type: "changed-symbol", symbol: id, via: ref.via });
+      changedReasons.set(ref.testId, list);
+    }
+  }
+  const selected: SelectedTest[] = [];
+  for (const test of input.discovered) {
+    const reasons: SelectionReason[] = [];
+    const entry = input.lock?.tests[test.testId];
+    if (input.changedSpecFiles.has(test.relFile)) {
+      reasons.push({ type: "test-file-changed", file: test.relFile });
+    }
+    if (entry?.alwaysRun !== undefined) {
+      reasons.push({ type: "always-run", reason: entry.alwaysRun });
+    }
+    if (entry === undefined) {
+      reasons.push({ type: "unrecorded" });
+    } else {
+      reasons.push(...(changedReasons.get(test.testId) ?? []));
+    }
+    if (reasons.length > 0) selected.push({ ...toRef(test), reasons });
+  }
+  return selected;
 }
 
 /**
@@ -358,6 +405,7 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
       edges: entries.reduce((sum, entry) => sum + Object.keys(entry.touched).length, 0),
     });
   }
+  const symbolIndex = buildSymbolTestIndex(lock);
   timer.runSync("lockfile.trust", () => {
     unsafeReasons.push(
       ...lockfileTrustReasons({
@@ -370,36 +418,13 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
         discoveredIds,
         baseHashes,
         headHashes,
+        symbolIndex,
       }),
     );
   });
 
   const endIntersect = timer.span("selection.intersect");
-  const selected: SelectedTest[] = [];
-  for (const test of discovered) {
-    const reasons: SelectionReason[] = [];
-    const entry = lock?.tests[test.testId];
-    if (changedSpecFiles.has(test.relFile)) {
-      reasons.push({ type: "test-file-changed", file: test.relFile });
-    }
-    if (entry?.alwaysRun !== undefined) {
-      reasons.push({ type: "always-run", reason: entry.alwaysRun });
-    }
-    if (entry === undefined) {
-      reasons.push({ type: "unrecorded" });
-    } else {
-      // Sort only the matched symbols (reason order is unchanged);
-      // touched sets can hold hundreds of keys per test.
-      const matched = Object.keys(entry.touched)
-        .filter((id) => changedSymbols.has(id as SymbolId))
-        .sort();
-      for (const id of matched) {
-        const via = entry.touched[id as SymbolId] ?? "direct";
-        reasons.push({ type: "changed-symbol", symbol: id, via });
-      }
-    }
-    if (reasons.length > 0) selected.push({ ...toRef(test), reasons });
-  }
+  const selected = intersectSelection({ discovered, lock, symbolIndex, changedSymbols, changedSpecFiles });
   endIntersect({ tests: discovered.length, selected: selected.length });
 
   return {

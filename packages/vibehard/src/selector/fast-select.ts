@@ -17,12 +17,12 @@ import { PhaseTimer, timingEnabled } from "../timing.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
 import { getFrameworkDriver } from "../verifier/driver.js";
 import {
+  buildSymbolTestIndex,
   hashAssetBytes,
   hashSymbolTexts,
   parseLockfile,
   type VibehardLockfile,
 } from "../verifier/lockfile.js";
-import type { ListedTest } from "../verifier/listed.js";
 import {
   classifyChangedFile,
   computeChangedSymbolsForFile,
@@ -39,14 +39,8 @@ import {
   resolveGitRoot,
 } from "./git.js";
 import { ParseCache, parseCacheEnabled, parseCacheKey } from "./parse-cache.js";
-import { lockfileTrustReasons } from "./select.js";
-import type {
-  DiscoveredTestRef,
-  SelectedTest,
-  SelectionReason,
-  SelectionResult,
-  SelectOptions,
-} from "./types.js";
+import { intersectSelection, lockfileTrustReasons, toRef } from "./select.js";
+import type { SelectionResult, SelectOptions } from "./types.js";
 
 /** Whether fast selection is on: explicit option wins over the env. */
 export function fastSelectEnabled(
@@ -68,16 +62,6 @@ function readTextOrNull(absFile: string): string | null {
   } catch {
     return null;
   }
-}
-
-function toRef(test: ListedTest): DiscoveredTestRef {
-  return {
-    testId: test.testId,
-    file: test.relFile,
-    line: test.line,
-    title: test.title,
-    titlePath: test.titlePath,
-  };
 }
 
 /**
@@ -386,18 +370,16 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   const specFiles = new Set(discovered.map((t) => t.relFile));
   const lockfileRel = toPosix(path.relative(rootDir, resolved.lockfilePath));
 
-  // Touched union U over still-discovered tests, and its files F_u.
+  // Touched union U over still-discovered tests, and its files F_u,
+  // derived from the inverted index (reused for trust + intersect).
   const endUnion = timer.span("fast.touchedUnion");
+  const symbolIndex = buildSymbolTestIndex(lock);
   const touchedIds = new Set<SymbolId>();
   const lockfileAssets = new Set<string>();
-  if (lock !== null) {
-    for (const [testId, entry] of Object.entries(lock.tests)) {
-      if (!discoveredIds.has(testId)) continue;
-      for (const id of Object.keys(entry.touched)) {
-        touchedIds.add(id);
-        if (id.endsWith("#<file>")) lockfileAssets.add(fileOfSymbolId(id));
-      }
-    }
+  for (const [id, refs] of symbolIndex) {
+    if (!refs.some((ref) => discoveredIds.has(ref.testId))) continue;
+    touchedIds.add(id);
+    if (id.endsWith("#<file>")) lockfileAssets.add(fileOfSymbolId(id));
   }
   const touchedFiles = new Set([...touchedIds].map((id) => fileOfSymbolId(id)));
   endUnion({ symbols: touchedIds.size, files: touchedFiles.size });
@@ -614,34 +596,13 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
         discoveredIds,
         baseHashes,
         headHashes,
+        symbolIndex,
       }),
     );
   });
 
   const endIntersect = timer.span("selection.intersect");
-  const selected: SelectedTest[] = [];
-  for (const test of discovered) {
-    const reasons: SelectionReason[] = [];
-    const entry = lock?.tests[test.testId];
-    if (changedSpecFiles.has(test.relFile)) {
-      reasons.push({ type: "test-file-changed", file: test.relFile });
-    }
-    if (entry?.alwaysRun !== undefined) {
-      reasons.push({ type: "always-run", reason: entry.alwaysRun });
-    }
-    if (entry === undefined) {
-      reasons.push({ type: "unrecorded" });
-    } else {
-      const matched = Object.keys(entry.touched)
-        .filter((id) => changedSymbols.has(id as SymbolId))
-        .sort();
-      for (const id of matched) {
-        const via = entry.touched[id as SymbolId] ?? "direct";
-        reasons.push({ type: "changed-symbol", symbol: id, via });
-      }
-    }
-    if (reasons.length > 0) selected.push({ ...toRef(test), reasons });
-  }
+  const selected = intersectSelection({ discovered, lock, symbolIndex, changedSymbols, changedSpecFiles });
   endIntersect({ tests: discovered.length, selected: selected.length });
 
   return {

@@ -168,8 +168,11 @@ over precise, and auditable via the `referenced` tag in `explain`.
 
 ### Lockfile
 
-`vibehard.lock.json` (format version 2) at the project root is committed to
-git. For each test it stores the recorded touched set with touch kinds, a
+`vibehard.lock.json` (format version 3: each distinct (symbol, hash) pair
+interned once in a sorted symbol table, tests referencing it by index;
+version 2 files are read and auto-migrated on the next successful
+`record`/`verify` write, with no re-record) at the project root is committed
+to git. For each test it stores the recorded touched set with touch kinds, a
 SHA-256 of each touched symbol's source (exact slice for executable/value
 symbols, leftover-statement slices for `module`, raw bytes for `asset`),
 plus the framework name/version, the config hash, and the
@@ -568,6 +571,11 @@ Hardening:
   Phase 0 baseline in SCALING.md; the proposed budgets (≤2 s
   cold-cache, ≤1 s warm, excluding discovery) are recorded there and
   not yet enforced in CI.
+- AT-S05: every committed v2 lockfile round-trips v2 → v3 → in-memory
+  losslessly; `checkLockfile`, trust, and selection results are
+  unchanged; v3 is at least 5× smaller on the synthetic scale case;
+  corrupt v3 documents (bad indexes, unknown kinds, malformed hashes)
+  are rejected (`test/lockfile-v3.test.ts`).
 
 ## Validation Plan
 

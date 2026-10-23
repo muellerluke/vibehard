@@ -11,10 +11,12 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  readLockfile,
   recordProject,
   spawnCapture,
   testProject,
   verifyProject,
+  writeLockfile,
   type ProjectVerifyResult,
 } from "../src/index.js";
 import { runCli } from "../src/cli/index.js";
@@ -125,15 +127,13 @@ describe("AT-23: Cypress adapter on examples/next-cypress", () => {
   it("a touched symbol missing from the lockfile fails verify as drift (added)", async () => {
     const dir = await makeCopy((d) => {
       const lockPath = path.join(d, "vibehard.lock.json");
-      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
-        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
-      };
+      const lock = readLockfile(lockPath);
+      if (lock === null) throw new Error("fixture lockfile missing");
       const entry = lock.tests[HOME];
       if (entry === undefined) throw new Error("home entry missing");
       delete entry.touched[COUNTER];
       delete entry.symbolHashes[COUNTER];
-      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
-`);
+      writeLockfile(lockPath, lock);
     });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);
@@ -145,15 +145,13 @@ describe("AT-23: Cypress adapter on examples/next-cypress", () => {
   it("a lockfile symbol no longer touched fails verify as drift (removed)", async () => {
     const dir = await makeCopy((d) => {
       const lockPath = path.join(d, "vibehard.lock.json");
-      const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
-        tests: Record<string, { touched: Record<string, string>; symbolHashes: Record<string, string> }>;
-      };
+      const lock = readLockfile(lockPath);
+      if (lock === null) throw new Error("fixture lockfile missing");
       const entry = lock.tests[HOME];
       if (entry === undefined) throw new Error("home entry missing");
       entry.touched[DISCOUNT] = "direct";
       entry.symbolHashes[DISCOUNT] = "0".repeat(64);
-      writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
-`);
+      writeLockfile(lockPath, lock);
     });
     const result = await verifyProject({ rootDir: dir, filter: ["home page"] });
     const r = only(result);

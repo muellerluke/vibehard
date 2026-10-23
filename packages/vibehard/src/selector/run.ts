@@ -9,6 +9,7 @@ import {
 } from "../indexer/index.js";
 import { filterSymbols, loadConfig, type ResolvedConfig } from "../verifier/config.js";
 import {
+  buildSymbolTestIndex,
   hashSymbolSources,
   readLockfile,
   type LockfileTestEntry,
@@ -295,6 +296,7 @@ async function explainProjectFast(options: ExplainOptions): Promise<ExplainResul
   if (lock === null) {
     diagnostics.push("no lockfile found; touched sets are unknown (run `vibehard record`)");
   }
+  const symbolIndex = buildSymbolTestIndex(lock);
 
   const parser = createProjectParser(rootDir);
   let cache = new ParseCache(null);
@@ -334,14 +336,13 @@ async function explainProjectFast(options: ExplainOptions): Promise<ExplainResul
   if (query.includes("#")) {
     const file = fileOfSymbolId(query);
     const membership = new Set(loadProjectFileList(rootDir));
-    for (const entry of Object.values(lock?.tests ?? {})) {
-      for (const id of Object.keys(entry.touched)) membership.add(fileOfSymbolId(id));
-    }
+    for (const id of symbolIndex.keys()) membership.add(fileOfSymbolId(id));
     if (!membership.has(file)) return null;
 
     const touching: [string, LockfileTestEntry][] = [];
-    for (const [testId, entry] of Object.entries(lock?.tests ?? {})) {
-      if (entry.touched[query as SymbolId] !== undefined) touching.push([testId, entry]);
+    for (const ref of symbolIndex.get(query) ?? []) {
+      const entry = lock?.tests[ref.testId];
+      if (entry !== undefined) touching.push([ref.testId, entry]);
     }
     const loaded = await loadFor(touching.map(([, e]) => e), file);
     const loadedSymbols: SymbolRecord[] = [];
@@ -454,15 +455,16 @@ async function explainProjectFull(options: ExplainOptions): Promise<ExplainResul
   if (lock === null) {
     diagnostics.push("no lockfile found; touched sets are unknown (run `vibehard record`)");
   }
+  const symbolIndex = buildSymbolTestIndex(lock);
 
   const query = options.query;
   if (query.includes("#")) {
     const record = symbols.find((s) => s.id === query);
     const tests: ExplainTestEntry[] = [];
-    for (const [testId, entry] of Object.entries(lock?.tests ?? {})) {
-      const via = entry.touched[query as SymbolId];
-      if (via !== undefined) {
-        tests.push(explainEntry(testId, entry.file, entry.titlePath, entry, headHashes, knownIds, via));
+    for (const ref of symbolIndex.get(query) ?? []) {
+      const entry = lock?.tests[ref.testId];
+      if (entry !== undefined) {
+        tests.push(explainEntry(ref.testId, entry.file, entry.titlePath, entry, headHashes, knownIds, ref.via));
       }
     }
     tests.sort((a, b) => (a.testId < b.testId ? -1 : a.testId > b.testId ? 1 : 0));

@@ -1,53 +1,23 @@
 {
-  "version": 2,
-  "framework": {
-    "name": "puppeteer",
-    "version": "24.43.1"
-  },
+  "version": 3,
+  "framework": {"name":"puppeteer","version":"24.43.1"},
   "configHash": "face11fd970c22effad6120f2596ea248ca7020dae336df025c2d885867aff93",
   "graphVersion": 3,
+  "symbols": [
+    {"id":"src/app/api/coupons/route.ts#<module>","h":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"id":"src/app/api/coupons/route.ts#POST","h":"d0a8bdb7452b9cad199566fcc233444221c544789f5f60a4aeaad1812f60f1b2"},
+    {"id":"src/app/checkout/page.tsx#<module>","h":"62100c430c684131b0dce1f1da7a13442fd33ae4850eb9de40a27f924b3e54b8"},
+    {"id":"src/app/checkout/page.tsx#CheckoutPage","h":"233acb22755a64660df8fb5ce10f75d1c8c8ee7a8b3e043a194aff1acca8253c"},
+    {"id":"src/lib/cart.ts#<module>","h":"7f41389714a5a8eaa3d43132965ea02c76c56ee00f9b1b18942108a5ca68ba66"},
+    {"id":"src/lib/cart.ts#Cart","h":"369c8b8be3ece51c30a37316d65607b5e063546140bd8ad85f7df319bdf134fa"},
+    {"id":"src/lib/cart.ts#Cart.addItem","h":"c81885bc5940f0d98d1e6028de849f94b1e4016272b7c07c76d968871a9c90b3"},
+    {"id":"src/lib/cart.ts#Cart.items","h":"1bc04f6f9d9f7bbba612bcedd8b2cb4e054ea2544f54f667246a8d77d5f63ea7"},
+    {"id":"src/lib/format.ts#<module>","h":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"id":"src/lib/format.ts#CENTS_PER_DOLLAR","h":"8da551620fe13c125d303457f88f9a78b7c495458dadcde43f36270691d6d35b"},
+    {"id":"src/lib/format.ts#formatPrice","h":"65a822ed7aa6ab364f524c80cb0ecdb9d6d1e4de054618dc4350948137f011c1"}
+  ],
   "tests": {
-    "e2e-puppeteer/checkout.test.mjs::checkout page shows the cart total": {
-      "file": "e2e-puppeteer/checkout.test.mjs",
-      "titlePath": [
-        "checkout page shows the cart total"
-      ],
-      "touched": {
-        "src/app/checkout/page.tsx#<module>": "module",
-        "src/app/checkout/page.tsx#CheckoutPage": "direct",
-        "src/lib/cart.ts#<module>": "module",
-        "src/lib/cart.ts#Cart": "class",
-        "src/lib/cart.ts#Cart.addItem": "direct",
-        "src/lib/cart.ts#Cart.items": "direct",
-        "src/lib/format.ts#<module>": "module",
-        "src/lib/format.ts#CENTS_PER_DOLLAR": "referenced",
-        "src/lib/format.ts#formatPrice": "direct"
-      },
-      "symbolHashes": {
-        "src/app/checkout/page.tsx#<module>": "62100c430c684131b0dce1f1da7a13442fd33ae4850eb9de40a27f924b3e54b8",
-        "src/app/checkout/page.tsx#CheckoutPage": "233acb22755a64660df8fb5ce10f75d1c8c8ee7a8b3e043a194aff1acca8253c",
-        "src/lib/cart.ts#<module>": "7f41389714a5a8eaa3d43132965ea02c76c56ee00f9b1b18942108a5ca68ba66",
-        "src/lib/cart.ts#Cart": "369c8b8be3ece51c30a37316d65607b5e063546140bd8ad85f7df319bdf134fa",
-        "src/lib/cart.ts#Cart.addItem": "c81885bc5940f0d98d1e6028de849f94b1e4016272b7c07c76d968871a9c90b3",
-        "src/lib/cart.ts#Cart.items": "1bc04f6f9d9f7bbba612bcedd8b2cb4e054ea2544f54f667246a8d77d5f63ea7",
-        "src/lib/format.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/format.ts#CENTS_PER_DOLLAR": "8da551620fe13c125d303457f88f9a78b7c495458dadcde43f36270691d6d35b",
-        "src/lib/format.ts#formatPrice": "65a822ed7aa6ab364f524c80cb0ecdb9d6d1e4de054618dc4350948137f011c1"
-      }
-    },
-    "e2e-puppeteer/checkout.test.mjs::coupon api accepts a code": {
-      "file": "e2e-puppeteer/checkout.test.mjs",
-      "titlePath": [
-        "coupon api accepts a code"
-      ],
-      "touched": {
-        "src/app/api/coupons/route.ts#<module>": "module",
-        "src/app/api/coupons/route.ts#POST": "direct"
-      },
-      "symbolHashes": {
-        "src/app/api/coupons/route.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/app/api/coupons/route.ts#POST": "d0a8bdb7452b9cad199566fcc233444221c544789f5f60a4aeaad1812f60f1b2"
-      }
-    }
+    "e2e-puppeteer/checkout.test.mjs::checkout page shows the cart total": {"file":"e2e-puppeteer/checkout.test.mjs","titlePath":["checkout page shows the cart total"],"touched":{"direct":[3,6,7,10],"referenced":[9],"module":[2,4,8],"class":[5]}},
+    "e2e-puppeteer/checkout.test.mjs::coupon api accepts a code": {"file":"e2e-puppeteer/checkout.test.mjs","titlePath":["coupon api accepts a code"],"touched":{"direct":[1],"module":[0]}}
   }
 }

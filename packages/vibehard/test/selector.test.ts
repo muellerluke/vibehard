@@ -23,6 +23,7 @@ import {
   spawnCapture,
   testProject,
   verifyProject,
+  writeLockfile,
   type SelectionResult,
   type SymbolRecord,
   type TestProjectResult,
@@ -256,7 +257,7 @@ describe("selector units", () => {
       symbolHashes: { "src/a.ts#f": "hf", "src/a.ts#g": "hg" },
     };
     const lock = {
-      version: 2 as const,
+      version: 3 as const,
       framework: { name: "playwright", version: "1.59.0" },
       configHash: "cfg",
       graphVersion: INDEXER_VERSION,
@@ -416,7 +417,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     const entry = Object.values(lock.tests).find((e) => POST in e.touched);
     if (entry === undefined) throw new Error("coupon entry missing");
     entry.symbolHashes[POST] = "0".repeat(64);
-    writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+    writeLockfile(lockPath, lock);
     edit(dir, "src/app/api/coupons/route.ts", (t) =>
       t.replace("{ ok: true, code: body.code }", "{ ok: true, code: body.code, via: \"api\" }"));
     const { exitCode, result } = await dryRun(dir);
@@ -433,7 +434,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
         const entry = lock.tests[COUPON_ID];
         if (entry === undefined) throw new Error("coupon entry missing");
         entry.alwaysRun = "flaky upstream";
-        writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+        writeLockfile(lockPath, lock);
       },
     });
     const { exitCode, result } = await dryRun(dir);

@@ -1,103 +1,34 @@
 {
-  "version": 2,
-  "framework": {
-    "name": "playwright",
-    "version": "1.59.0"
-  },
+  "version": 3,
+  "framework": {"name":"playwright","version":"1.59.0"},
   "configHash": "dbd75508a69dd861c67a17a67c8a3779fca286bf73cd339ac4586a6e6121348b",
   "graphVersion": 3,
+  "symbols": [
+    {"id":"src/app/actions.ts#<module>","h":"345f13c60a02cf8081dc5c80a340a730d7bd01fa3306a8516c467ed473a36d0d"},
+    {"id":"src/app/actions.ts#saveNote","h":"1a7e898ebdd6e89a2bd30233542353f2b4aead6dc248bf746b0705acc98025a7"},
+    {"id":"src/app/api/price/route.ts#<module>","h":"d0d462ddd0c080435f5ce57998c01590ffcdbea417ff226f763c67eb262bd7c7"},
+    {"id":"src/app/api/price/route.ts#GET","h":"06f6cf3e9da4c863fe970f863840dcbe66a1aeaad0b5d4b9ce624f2923d75ef7"},
+    {"id":"src/app/counter/Counter.tsx#<module>","h":"235775b15b24b588cc9a704e9fec4f97c80884805972b6ec95abb72b5a45d027"},
+    {"id":"src/app/counter/Counter.tsx#Counter","h":"75f2bc5c7f92491f12da6732ffbd45bd2c586504ff80eb499418607aea2a62c4"},
+    {"id":"src/app/layout.tsx#<module>","h":"f9a18180155e02d10fcf3eb395924a6597745e364157195f711725a75de211bb"},
+    {"id":"src/app/layout.tsx#RootLayout","h":"937a0bda43b8b52c29c35f0944e6f722370931ddb79624a9bf9a0f5075bfb25b"},
+    {"id":"src/app/page.tsx#<module>","h":"9b952b426065d2035aade74bb5b4a386951635ba7657a80543adcff82be9f055"},
+    {"id":"src/app/page.tsx#HomePage","h":"c5603deb8edc33a89eab11f285bd9a8715be4520cef5feae9e9e7bf4a95835c6"},
+    {"id":"src/lib/notes.ts#<module>","h":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"id":"src/lib/notes.ts#normalizeNote","h":"a796db1fa475fa77921b03800347b2f61dac0893b0a10f8b36391ad6dafb785b"},
+    {"id":"src/lib/pricing.ts#<module>","h":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"id":"src/lib/pricing.ts#applyDiscount","h":"e6f9e9a87de5a5c7a174613320a7c1d02d2e82d3244681b4cca71af24cce038c"},
+    {"id":"src/lib/pricing.ts#formatPrice","h":"1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298"},
+    {"id":"src/pages/api/hello.ts#<module>","h":"f303f7349ee5b320fafdb94e18240fd0879cbca6e7c9e29eb0671cc8eabb5939"},
+    {"id":"src/pages/api/hello.ts#handler","h":"26d394500de75f6d75e38ffd3e504b3ee5684890572bdc1a863fac55547e49ff"},
+    {"id":"src/pages/legacy.tsx#<module>","h":"6f753cb1d8f4cb24cce78aa7fc5e8fea226faf24da6ac248ff1edcf2c3297669"},
+    {"id":"src/pages/legacy.tsx#LegacyPage","h":"66b5415d26e51d5ca81f439849b294de9cb7e4eb0fd40ad32ea4a78755b188f5"},
+    {"id":"src/pages/legacy.tsx#getServerSideProps","h":"a0b5b0e9b070f5967f24f73ebe0e72fe462a808b995b1082c208b5be0eb600ec"}
+  ],
   "tests": {
-    "e2e/app.spec.ts::home page prices, counts, and saves a note": {
-      "file": "e2e/app.spec.ts",
-      "titlePath": [
-        "home page prices, counts, and saves a note"
-      ],
-      "touched": {
-        "src/app/actions.ts#<module>": "module",
-        "src/app/actions.ts#saveNote": "direct",
-        "src/app/counter/Counter.tsx#<module>": "module",
-        "src/app/counter/Counter.tsx#Counter": "direct",
-        "src/app/layout.tsx#<module>": "module",
-        "src/app/layout.tsx#RootLayout": "direct",
-        "src/app/page.tsx#<module>": "module",
-        "src/app/page.tsx#HomePage": "direct",
-        "src/lib/notes.ts#<module>": "module",
-        "src/lib/notes.ts#normalizeNote": "direct",
-        "src/lib/pricing.ts#<module>": "module",
-        "src/lib/pricing.ts#formatPrice": "direct"
-      },
-      "symbolHashes": {
-        "src/app/actions.ts#<module>": "345f13c60a02cf8081dc5c80a340a730d7bd01fa3306a8516c467ed473a36d0d",
-        "src/app/actions.ts#saveNote": "1a7e898ebdd6e89a2bd30233542353f2b4aead6dc248bf746b0705acc98025a7",
-        "src/app/counter/Counter.tsx#<module>": "235775b15b24b588cc9a704e9fec4f97c80884805972b6ec95abb72b5a45d027",
-        "src/app/counter/Counter.tsx#Counter": "75f2bc5c7f92491f12da6732ffbd45bd2c586504ff80eb499418607aea2a62c4",
-        "src/app/layout.tsx#<module>": "f9a18180155e02d10fcf3eb395924a6597745e364157195f711725a75de211bb",
-        "src/app/layout.tsx#RootLayout": "937a0bda43b8b52c29c35f0944e6f722370931ddb79624a9bf9a0f5075bfb25b",
-        "src/app/page.tsx#<module>": "9b952b426065d2035aade74bb5b4a386951635ba7657a80543adcff82be9f055",
-        "src/app/page.tsx#HomePage": "c5603deb8edc33a89eab11f285bd9a8715be4520cef5feae9e9e7bf4a95835c6",
-        "src/lib/notes.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/notes.ts#normalizeNote": "a796db1fa475fa77921b03800347b2f61dac0893b0a10f8b36391ad6dafb785b",
-        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298"
-      }
-    },
-    "e2e/app.spec.ts::legacy pages route renders per request": {
-      "file": "e2e/app.spec.ts",
-      "titlePath": [
-        "legacy pages route renders per request"
-      ],
-      "touched": {
-        "src/lib/pricing.ts#<module>": "module",
-        "src/lib/pricing.ts#formatPrice": "direct",
-        "src/pages/legacy.tsx#<module>": "module",
-        "src/pages/legacy.tsx#LegacyPage": "direct",
-        "src/pages/legacy.tsx#getServerSideProps": "direct"
-      },
-      "symbolHashes": {
-        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298",
-        "src/pages/legacy.tsx#<module>": "6f753cb1d8f4cb24cce78aa7fc5e8fea226faf24da6ac248ff1edcf2c3297669",
-        "src/pages/legacy.tsx#LegacyPage": "66b5415d26e51d5ca81f439849b294de9cb7e4eb0fd40ad32ea4a78755b188f5",
-        "src/pages/legacy.tsx#getServerSideProps": "a0b5b0e9b070f5967f24f73ebe0e72fe462a808b995b1082c208b5be0eb600ec"
-      }
-    },
-    "e2e/app.spec.ts::pages api greets by name": {
-      "file": "e2e/app.spec.ts",
-      "titlePath": [
-        "pages api greets by name"
-      ],
-      "touched": {
-        "src/lib/notes.ts#<module>": "module",
-        "src/lib/notes.ts#normalizeNote": "direct",
-        "src/pages/api/hello.ts#<module>": "module",
-        "src/pages/api/hello.ts#handler": "direct"
-      },
-      "symbolHashes": {
-        "src/lib/notes.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/notes.ts#normalizeNote": "a796db1fa475fa77921b03800347b2f61dac0893b0a10f8b36391ad6dafb785b",
-        "src/pages/api/hello.ts#<module>": "f303f7349ee5b320fafdb94e18240fd0879cbca6e7c9e29eb0671cc8eabb5939",
-        "src/pages/api/hello.ts#handler": "26d394500de75f6d75e38ffd3e504b3ee5684890572bdc1a863fac55547e49ff"
-      }
-    },
-    "e2e/app.spec.ts::price api applies a discount": {
-      "file": "e2e/app.spec.ts",
-      "titlePath": [
-        "price api applies a discount"
-      ],
-      "touched": {
-        "src/app/api/price/route.ts#<module>": "module",
-        "src/app/api/price/route.ts#GET": "direct",
-        "src/lib/pricing.ts#<module>": "module",
-        "src/lib/pricing.ts#applyDiscount": "direct",
-        "src/lib/pricing.ts#formatPrice": "direct"
-      },
-      "symbolHashes": {
-        "src/app/api/price/route.ts#<module>": "d0d462ddd0c080435f5ce57998c01590ffcdbea417ff226f763c67eb262bd7c7",
-        "src/app/api/price/route.ts#GET": "06f6cf3e9da4c863fe970f863840dcbe66a1aeaad0b5d4b9ce624f2923d75ef7",
-        "src/lib/pricing.ts#<module>": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "src/lib/pricing.ts#applyDiscount": "e6f9e9a87de5a5c7a174613320a7c1d02d2e82d3244681b4cca71af24cce038c",
-        "src/lib/pricing.ts#formatPrice": "1f9cfc7eaaec6e22bbf18f73e1eceba18f4ec230596d04e1e26da9a11d65d298"
-      }
-    }
+    "e2e/app.spec.ts::home page prices, counts, and saves a note": {"file":"e2e/app.spec.ts","titlePath":["home page prices, counts, and saves a note"],"touched":{"direct":[1,5,7,9,11,14],"module":[0,4,6,8,10,12]}},
+    "e2e/app.spec.ts::legacy pages route renders per request": {"file":"e2e/app.spec.ts","titlePath":["legacy pages route renders per request"],"touched":{"direct":[14,18,19],"module":[12,17]}},
+    "e2e/app.spec.ts::pages api greets by name": {"file":"e2e/app.spec.ts","titlePath":["pages api greets by name"],"touched":{"direct":[11,16],"module":[10,15]}},
+    "e2e/app.spec.ts::price api applies a discount": {"file":"e2e/app.spec.ts","titlePath":["price api applies a discount"],"touched":{"direct":[3,13,14],"module":[2,12]}}
   }
 }

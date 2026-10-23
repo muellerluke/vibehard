@@ -1,8 +1,9 @@
 # Scaling Vibehard to Large Repositories
 
-Status: **Phases 0–1 implemented** (Phase 1 shipped opt-in behind
-`--fast-select`; see "Phase 1 results" below). Phases 2–5 remain a
-proposal. This document collects the
+Status: **Phases 0–2 implemented** (Phase 1 shipped opt-in behind
+`--fast-select`; Phase 2 lockfile v3 auto-migrates v2 files on the
+next write; see "Phase 1 results" and "Phase 2 results" below).
+Phases 3–5 remain a proposal. This document collects the
 performance analysis and the phased plan for making `vibehard` usable in
 repositories with thousands of e2e tests and thousands of source files.
 It is a companion to [MANIFEST.md](MANIFEST.md), whose Stage 7
@@ -627,7 +628,7 @@ Sketch:
     "<testId>": {
       "file": "e2e/checkout.spec.ts",
       "titlePath": ["checkout applies a coupon"],
-      "touched": { "direct": [0, 5], "referenced": [9], "module": [12] }
+      "touched": { "direct": [0, 5], "referenced": [9], "module": [12], "class": [3], "asset": [7] }
       // optional: "alwaysRun": "reason"
     }
   }
@@ -662,6 +663,76 @@ Open decision (see Open Questions): single compact file as above, or
 split per spec file under a lock directory to reduce merge conflicts
 at the cost of many files. Default proposal: single file now;
 revisit only if merge pain is reported.
+
+#### Phase 2 results (implemented, measured 2026-10-20)
+
+Implemented in `packages/vibehard/src/verifier/lockfile.ts`: readers
+accept v2 and v3 and normalize both into the existing in-memory
+shape (`VibehardLockfile.version` is now `3`); writers emit only v3,
+so `record` and non-CI `verify` migrate a v2 lockfile on their next
+successful write. `INDEXER_VERSION`, the recorded data, and every
+result shape are unchanged; no re-record is needed. Layout is a
+single file (the open decision above, taken): pretty-printed header,
+one interned `{"id","h"}` symbol per line, one test per line,
+trailing newline. Deviations from the sketch, all found by auditing
+the code and the seven committed lockfiles (177 edges, zero orphan
+or missing hashes): all five touch kinds get index groups (the sketch
+showed three; `class` and `asset` occur in real files); a touched
+symbol with no recorded hash interns without `h` and keeps failing
+the trust check exactly like a missing v2 hash; hashes for symbols a
+test did not touch are dropped on migration (no consumer reads
+them). Because integer indexes could silently mis-select if corrupt,
+the v3 reader validates strictly — sorted duplicate-free symbol
+table, 64-hex hashes, in-range strictly-increasing indexes, known
+kinds, no symbol referenced twice per test, no unknown fields — and
+a newer-than-v3 file says "upgrade vibehard". Older vibehard
+versions cannot read v3, so this ships as 0.2.0. Selection, the
+trust check, the fast path's touched union, and `explain` now share
+an in-memory inverted index (`buildSymbolTestIndex`, internal) and
+one intersect implementation; trust is checked per distinct
+(symbol, expected-hash) pair over discovered tests.
+
+Gate: AT-S05 passes in `test/lockfile-v3.test.ts` (28 tests: v2 →
+internal → v3 → internal losslessness incl. pair interning,
+`alwaysRun`, and missing hashes; byte-canonical committed files;
+`checkLockfile`/trust parity v2 vs v3; 15 strict-validation
+rejections; ≥5× size assertion). Six committed lockfiles were
+migrated by parse+serialize and the seventh
+(`fixtures/tiny-app/vibehard.puppeteer.lock.json`) by a passing
+`verify` during the test run itself; all seven were verified
+semantically identical to their v2 bytes (per-test touched kinds
+and hashes, compared via plain JSON against HEAD). Tests that had written lockfiles with raw
+`JSON.stringify` now go through `writeLockfile`, since in-memory and
+wire shapes intentionally differ.
+
+Environment: Apple M1 Pro, macOS (arm64), Node v23.5.0, base commit
+`41b60f7` plus the Phase 2 working tree; medians of 5 runs after one
+warm-up, `leaf` scenario, built CLI:
+
+| Preset | Lockfile v2 → v3 | `lockfile.load` | `lockfile.trust` | `selection.intersect` | Selection total |
+|---|---|---|---|---|---|
+| smoke, fast warm | 0.8 MB → 186 KB (4.5×) | 9 ms | — | — | 100 ms (Phase 1: 118 ms) |
+| large, full | 71.9 MB → 8.9 MB (8.0×) | 377 → 214 ms | 100 ms | 43 → 1.5 ms | 5,600 → 4,717 ms |
+| large, fast warm | 71.9 MB → 8.9 MB (8.0×) | ≈390 → 190 ms | 90 ms | 1.4 ms | 1,018 → 855 ms |
+| large, fast cold | 71.9 MB → 8.9 MB (8.0×) | 194 ms | 99 ms | 1.3 ms | 1,432 ms |
+
+Reading the table honestly: size is the headline win (8.0× at
+`large`, inside the ~10 MB estimate for the sketch's larger case),
+and the inverted index removes the intersect scan as a term.
+Load time improves only ~1.8× despite 8× fewer bytes, because v2's
+cost was `JSON.parse` in native code while v3 additionally validates
+and builds the same 450,000-edge in-memory maps in JS; the fast
+path's touched-union phase grew (58 → 143 ms) because it now also
+builds the inverted index that trust and intersect reuse. Net
+fast-warm selection still improves (≈968 → ≈810 ms excluding
+discovery) and stays inside the AT-S04 budget. Sort-order diff
+churn, measured on the committed `two-frontends` file by simulated
+re-records: adding one early-sorting symbol touched by one test
+changes 7 lines (the new symbol line plus every test line whose
+indexes shift), a late-sorting symbol 5 lines, and a single-symbol
+hash change 7 lines. Churn therefore scales with referencing tests,
+as predicted; accepted for content-determined ordering (AT-11,
+Phase 3 shard merges), revisit only on reported merge pain.
 
 ### Phase 3 — Parallel, sharded, and incremental recording
 
@@ -904,9 +975,9 @@ recall guard for Phases 1, 3, and 5.
 - Performance budget numbers and the reference machine for AT-S04
   (CI runner vs developer laptop) — decide in Phase 0 from baseline
   measurements, not in advance.
-- Lockfile v3 physical layout: single compact file (proposed) vs a
-  directory of per-spec files. Decide at Phase 2 kickoff; the
-  in-memory model is the same either way.
+- Lockfile v3 physical layout: decided at Phase 2 — single compact
+  file (see "Phase 2 results"); revisit the per-spec directory only
+  if merge pain is reported.
 - CLI spellings for `--jobs`, `--shard`, and the merge command,
   following the existing CLI conventions (`packages/vibehard/src/cli/index.ts`).
 - Where shard artifacts live in CI (uploaded artifacts vs committed

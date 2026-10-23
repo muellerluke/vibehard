@@ -20,6 +20,7 @@ import {
   spawnCapture,
   spawnWithCoverage,
   verifyProject,
+  writeLockfile,
   type ProjectVerifyResult,
 } from "../src/index.js";
 import { runCli } from "../src/cli/index.js";
@@ -180,8 +181,7 @@ ${text.replace(
     if (entry === undefined) throw new Error("entry missing");
     entry.touched[FORMAT] = "direct";
     entry.symbolHashes[FORMAT] = "0".repeat(64);
-    writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}
-`);
+    writeLockfile(lockPath, lock);
     const result = await verifyProject({ rootDir: dir, filter: ["coupon"] });
     expect(result.exitCode).toBe(2);
     const r = only(result);
@@ -200,7 +200,7 @@ ${text.replace(
     const couponEntry = Object.values(lock.tests).find((e) => POST in e.touched);
     if (couponEntry === undefined) throw new Error("coupon entry missing");
     couponEntry.symbolHashes[POST] = "0".repeat(64);
-    writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+    writeLockfile(lockPath, lock);
 
     const tampered = await verifyProject({ rootDir: dir, filter: ["coupon"], ci: true });
     expect(tampered.exitCode).toBe(2);
