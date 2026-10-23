@@ -91,6 +91,26 @@ export interface ProjectVerifyResult {
   timing?: PhaseTiming[];
 }
 
+/** Options for `mergeShardArtifacts` (`record --merge`). */
+export interface MergeShardsOptions {
+  rootDir: string;
+  configPath?: string;
+  /** Shard artifact paths (relative paths resolve against `rootDir`). */
+  files: readonly string[];
+}
+
+export interface MergeShardsResult {
+  ok: boolean;
+  exitCode: 0;
+  rootDir: string;
+  /** Number of shard artifacts merged (`i` in `1..shards`). */
+  shards: number;
+  /** Number of test entries written into the lockfile. */
+  tests: number;
+  lockfile: { path: string; written: boolean };
+  diagnostics: string[];
+}
+
 export interface VerifyProjectOptions {
   rootDir: string;
   configPath?: string;

@@ -45,9 +45,33 @@ export { puppeteerDriver } from "./puppeteer-runner.js";
 export { cypressDriver, encodeOnlyTitles, resolveCypressCli, ENV_ONLY_TITLES } from "./cypress-runner.js";
 export { discoverInFile, discoverStaticTests, findSpecFiles } from "./discovery.js";
 export type { StaticDiscoveryOptions } from "./discovery.js";
-export { formatVerifyReport, recordProject, resolveJobs, verifyProject } from "./run.js";
+export {
+  formatMergeReport,
+  formatVerifyReport,
+  mergeShardArtifacts,
+  recordProject,
+  resolveJobs,
+  verifyProject,
+} from "./run.js";
+export {
+  discoveredSetHash,
+  formatShardSpec,
+  mergeShardArtifactList,
+  parseShardArtifact,
+  parseShardSpec,
+  readShardArtifact,
+  serializeShardArtifact,
+  shardOfTestId,
+  shardSourceState,
+  shardTests,
+  validateShardSpec,
+  writeShardArtifact,
+} from "./shards.js";
+export type { ShardArtifact, ShardProvenance, ShardSourceState } from "./shards.js";
 export { VibehardUsageError } from "./types.js";
 export type {
+  MergeShardsOptions,
+  MergeShardsResult,
   ProjectVerifyResult,
   RuntimeOptions,
   ShardSpec,

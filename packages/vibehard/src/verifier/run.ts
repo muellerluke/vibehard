@@ -20,6 +20,16 @@ import {
 import { readArtifacts, type ListedTest } from "./listed.js";
 import { startServers } from "./servers.js";
 import {
+  discoveredSetHash,
+  formatShardSpec,
+  mergeShardArtifactList,
+  readShardArtifact,
+  shardSourceState,
+  shardTests,
+  validateShardSpec,
+  writeShardArtifact,
+} from "./shards.js";
+import {
   PhaseTimer,
   formatPhaseTimings,
   timingEnabled,
@@ -28,6 +38,8 @@ import {
 import { computeTouchedSet, diffTouchedSets, type TouchedSet } from "./touched.js";
 import {
   VibehardUsageError,
+  type MergeShardsOptions,
+  type MergeShardsResult,
   type ProjectVerifyResult,
   type TestVerifyResult,
   type VerifyProjectOptions,
@@ -52,6 +64,62 @@ export async function recordProject(options: VerifyProjectOptions): Promise<Proj
   return runProject("record", options);
 }
 
+/**
+ * Merge a complete set of `record --shard` artifacts into the
+ * lockfile. No tests are observed: the artifacts must agree on
+ * provenance, cover every shard exactly once, and union to the
+ * discovered set they recorded against, and their provenance must
+ * match this project's current config and framework.
+ */
+export async function mergeShardArtifacts(
+  options: MergeShardsOptions,
+): Promise<MergeShardsResult> {
+  const rootDir = path.resolve(options.rootDir);
+  if (options.files.length === 0) {
+    throw new VibehardUsageError("vibehard: record --merge requires at least one shard artifact file");
+  }
+  const resolved = await loadConfig(rootDir, options.configPath);
+  const driver = getFrameworkDriver(resolved.config.framework);
+  const frameworkVersion = driver.version(rootDir);
+  const inputs = options.files.map((file) => {
+    const resolvedFile = path.resolve(rootDir, file);
+    return { file: resolvedFile, artifact: readShardArtifact(resolvedFile) };
+  });
+  const merged = mergeShardArtifactList(inputs);
+  if (merged.provenance.configHash !== resolved.configHash) {
+    throw new VibehardUsageError(
+      "vibehard: cannot merge shard artifacts: provenance config hash differs from the current config",
+    );
+  }
+  if (
+    merged.provenance.framework.name !== driver.name ||
+    merged.provenance.framework.version !== frameworkVersion
+  ) {
+    throw new VibehardUsageError(
+      `vibehard: cannot merge shard artifacts: provenance framework ${merged.provenance.framework.name}@${merged.provenance.framework.version} differs from ${driver.name}@${frameworkVersion}`,
+    );
+  }
+  const written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, merged.entries, {
+    fullRun: true,
+    discoveredTestIds: new Set(merged.entries.keys()),
+    freshOnUnreadable: true,
+  });
+  return {
+    ok: true,
+    exitCode: 0,
+    rootDir,
+    shards: merged.total,
+    tests: merged.entries.size,
+    lockfile: { path: resolved.lockfilePath, written },
+    diagnostics: [],
+  };
+}
+
+/** Human-readable report for `record --merge`. */
+export function formatMergeReport(result: MergeShardsResult): string {
+  return `record --merge: ${result.tests} test(s) from ${result.shards} shard(s); lockfile ${result.lockfile.written ? "updated" : "unchanged"} (${result.lockfile.path})\n`;
+}
+
 function sameFile(a: string, b: string): boolean {
   if (path.resolve(a) === path.resolve(b)) return true;
   try {
@@ -66,6 +134,16 @@ async function runProject(
   options: VerifyProjectOptions,
 ): Promise<ProjectVerifyResult> {
   const jobs = resolveJobs(options);
+  const shard = options.shard ?? null;
+  if (shard !== null) {
+    validateShardSpec(shard);
+    if ((options.filter ?? []).length > 0) {
+      throw new VibehardUsageError("vibehard: --shard cannot be combined with test filters");
+    }
+  }
+  if (options.shardOut !== undefined && (shard === null || mode !== "record")) {
+    throw new VibehardUsageError("vibehard: --shard-out is only valid for record --shard");
+  }
   const timer = new PhaseTimer(timingEnabled(options.timing));
   const rootDir = path.resolve(options.rootDir);
   const resolved: ResolvedConfig = await timer.run("config.load", () =>
@@ -96,7 +174,7 @@ async function runProject(
     (tests) => ({ tests: tests.length }),
   );
   const filters = options.filter ?? [];
-  const selected = discovered.filter(
+  let selected = discovered.filter(
     (t) =>
       filters.length === 0 ||
       filters.some((f) => t.relFile.includes(f) || t.title.includes(f) || t.testId.includes(f)),
@@ -108,6 +186,10 @@ async function runProject(
         : `vibehard: no tests match filter: ${filters.join(", ")}`,
     );
   }
+  // A shard may legitimately be empty (more shards than tests, or an
+  // unlucky hash split); it still writes its artifact so a merge can
+  // prove the shard ran.
+  if (shard !== null) selected = shardTests(selected, shard);
 
   // In verify mode the stored touched sets are the comparison target.
   // A missing lockfile is drift per test, not a usage error; an
@@ -193,8 +275,38 @@ async function runProject(
     ["drift", "unstable", "unmappable", "error"].includes(r.status),
   );
 
+  // A filtered or sharded run observed a subset: it may merge its
+  // entries but must never prune lockfile entries it did not observe.
+  const observedAllDiscovered = filters.length === 0 && shard === null;
+  let shardArtifactPath: string | null = null;
   const endLockfilePhase = timer.span("lockfile.checkOrWrite");
-  if (mode === "verify" && ci) {
+  if (mode === "record" && shard !== null) {
+    // A record shard never touches the lockfile. The artifact carries
+    // entries plus per-test statuses (failed shards still write one;
+    // the merge refuses them) and the provenance merges validate.
+    shardArtifactPath = path.resolve(
+      rootDir,
+      options.shardOut ?? `vibehard-shard-${shard.index}-of-${shard.total}.json`,
+    );
+    const source = await shardSourceState(rootDir);
+    writeShardArtifact(shardArtifactPath, {
+      kind: "vibehard-shard",
+      version: 1,
+      shard,
+      provenance: {
+        configHash: resolved.configHash,
+        framework: { name: driver.name, version: frameworkVersion },
+        graphVersion: INDEXER_VERSION,
+        source,
+        discovered: {
+          count: discovered.length,
+          hash: discoveredSetHash(discovered.map((t) => t.testId)),
+        },
+      },
+      tests: Object.fromEntries(entries),
+      results: results.map((r) => ({ testId: r.testId, status: r.status })),
+    });
+  } else if (mode === "verify" && ci) {
     drift = checkLockfile(existingLock, {
       configHash: resolved.configHash,
       frameworkVersion,
@@ -204,7 +316,7 @@ async function runProject(
         touched: r.touched,
         symbolHashes: allHashes,
       })),
-      fullRun: filters.length === 0,
+      fullRun: observedAllDiscovered,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
     });
     const budget = resolved.alwaysRunBudget ?? 0;
@@ -215,13 +327,13 @@ async function runProject(
     }
   } else if (mode === "verify" && !hasTestFailure && !hasFailure) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
-      fullRun: filters.length === 0,
+      fullRun: observedAllDiscovered,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
       freshOnUnreadable: false,
     });
   } else if (mode === "record" && entries.size > 0) {
     written = mergeAndWriteLockfile(resolved, driver, frameworkVersion, entries, {
-      fullRun: filters.length === 0,
+      fullRun: observedAllDiscovered,
       discoveredTestIds: new Set(discovered.map((t) => t.testId)),
       freshOnUnreadable: true,
     });
@@ -239,8 +351,8 @@ async function runProject(
     ok: exitCode === 0,
     mode,
     jobs,
-    shard: null,
-    shardArtifact: null,
+    shard,
+    shardArtifact: shardArtifactPath,
     incremental: false,
     ci,
     exitCode,
@@ -604,6 +716,11 @@ export function formatVerifyReport(result: ProjectVerifyResult): string {
     for (const d of r.diagnostics) lines.push(`  ${d}`);
   }
   for (const d of result.lockfile.drift) lines.push(`lockfile drift: ${d}`);
+  if (result.shardArtifact !== null && result.shard !== null) {
+    lines.push(
+      `shard ${formatShardSpec(result.shard)}: wrote ${result.shardArtifact} (lockfile untouched; merge with \`vibehard record --merge\`)`,
+    );
+  }
   for (const d of result.diagnostics) lines.push(d);
   const timingText = formatPhaseTimings("timing", result.timing);
   if (timingText !== "") {

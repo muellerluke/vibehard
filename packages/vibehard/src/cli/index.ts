@@ -12,7 +12,10 @@ import {
 import { timingEnabled } from "../timing.js";
 import {
   VibehardUsageError,
+  formatMergeReport,
   formatVerifyReport,
+  mergeShardArtifacts,
+  parseShardSpec,
   recordProject,
   verifyProject,
 } from "../verifier/index.js";
@@ -53,6 +56,12 @@ Options:
                to full indexing on any inconsistency
   --jobs <n>   record/verify: observe up to <n> tests concurrently
                (default 1; the app must tolerate <n> instances)
+  --shard <i>/<n> record/verify: observe only shard <i> of <n>
+               (record writes a shard artifact, not the lockfile)
+  --shard-out <file> record --shard: shard artifact path (default
+               vibehard-shard-<i>-of-<n>.json in the project root)
+  --merge      record: merge shard artifact files given as arguments
+               into the lockfile (observes nothing)
 
 record and verify accept optional filter arguments matched against
 test file paths and titles. explain takes one test filter or symbol ID
@@ -81,9 +90,15 @@ export async function runCli(
   const timing = timingFlag || timingEnabled(undefined);
   const fastSelectFlag = argv.includes("--fast-select");
   const jobsFlag = argv.includes("--jobs") || argv.some((a) => a.startsWith("--jobs="));
+  const mergeFlag = argv.includes("--merge");
+  const shardFlag = argv.includes("--shard") || argv.some((a) => a.startsWith("--shard="));
+  const shardOutFlag =
+    argv.includes("--shard-out") || argv.some((a) => a.startsWith("--shard-out="));
   let configPath: string | undefined;
   let baseRef: string | undefined;
   let jobsRaw: string | undefined;
+  let shardRaw: string | undefined;
+  let shardOut: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? "";
@@ -93,15 +108,24 @@ export async function runCli(
       arg === "--all" ||
       arg === "--dry-run" ||
       arg === "--timing" ||
-      arg === "--fast-select"
+      arg === "--fast-select" ||
+      arg === "--merge"
     ) {
       continue;
     }
-    if (arg === "--config" || arg === "--base" || arg === "--jobs") {
+    if (
+      arg === "--config" ||
+      arg === "--base" ||
+      arg === "--jobs" ||
+      arg === "--shard" ||
+      arg === "--shard-out"
+    ) {
       const value = argv[i + 1];
       if (arg === "--config") configPath = value;
       else if (arg === "--base") baseRef = value;
-      else jobsRaw = value;
+      else if (arg === "--jobs") jobsRaw = value;
+      else if (arg === "--shard") shardRaw = value;
+      else shardOut = value;
       i += 1;
       continue;
     }
@@ -115,6 +139,14 @@ export async function runCli(
     }
     if (arg.startsWith("--jobs=")) {
       jobsRaw = arg.slice("--jobs=".length);
+      continue;
+    }
+    if (arg.startsWith("--shard=")) {
+      shardRaw = arg.slice("--shard=".length);
+      continue;
+    }
+    if (arg.startsWith("--shard-out=")) {
+      shardOut = arg.slice("--shard-out=".length);
       continue;
     }
     args.push(arg);
@@ -146,6 +178,15 @@ export async function runCli(
   }
 
   if (cmd === "init") {
+    if (mergeFlag) {
+      return fail(3, "vibehard init: unknown option --merge", cmd);
+    }
+    if (shardFlag) {
+      return fail(3, "vibehard init: unknown option --shard", cmd);
+    }
+    if (shardOutFlag) {
+      return fail(3, "vibehard init: unknown option --shard-out", cmd);
+    }
     if (jobsFlag) {
       return fail(3, "vibehard init: unknown option --jobs", cmd);
     }
@@ -182,6 +223,15 @@ export async function runCli(
     if (fastSelectFlag) {
       return fail(3, `vibehard ${cmd}: unknown option --fast-select`, cmd);
     }
+    if (mergeFlag && cmd === "verify") {
+      return fail(3, "vibehard verify: unknown option --merge", cmd);
+    }
+    if (shardOutFlag && (cmd !== "record" || !shardFlag)) {
+      return fail(3, `vibehard ${cmd}: --shard-out is only valid for record --shard`, cmd);
+    }
+    if (shardOutFlag && (shardOut === undefined || shardOut === "")) {
+      return fail(3, `vibehard ${cmd}: --shard-out requires a file path`, cmd);
+    }
     let jobs: number | undefined;
     if (jobsFlag) {
       jobs = Number(jobsRaw);
@@ -192,13 +242,42 @@ export async function runCli(
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard ${cmd}: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
+    if (mergeFlag) {
+      if (jobsFlag || shardFlag || shardOutFlag || ci) {
+        return fail(3, "vibehard record: --merge cannot be combined with --jobs, --shard, --shard-out, or --ci", cmd);
+      }
+      if (rest.length === 0) {
+        return fail(3, "vibehard record: --merge requires at least one shard artifact file", cmd);
+      }
+      try {
+        const result = await mergeShardArtifacts({
+          rootDir: options.cwd ?? process.cwd(),
+          ...(configPath !== undefined ? { configPath } : {}),
+          files: rest,
+        });
+        return {
+          exitCode: result.exitCode,
+          stdout: json
+            ? JSON.stringify({ ...result, command: cmd })
+            : formatMergeReport(result),
+          stderr: "",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const code = error instanceof VibehardUsageError ? error.exitCode : 3;
+        return fail(code, message.startsWith("vibehard:") ? message : `vibehard ${cmd}: ${message}`, cmd);
+      }
+    }
     try {
+      const shard = shardFlag ? parseShardSpec(shardRaw ?? "") : undefined;
       const run = cmd === "record" ? recordProject : verifyProject;
       const result = await run({
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
         ...(rest.length > 0 ? { filter: rest } : {}),
         ...(jobs !== undefined ? { jobs } : {}),
+        ...(shard !== undefined ? { shard } : {}),
+        ...(shardOut !== undefined ? { shardOut } : {}),
         ci: cmd === "verify" && ci,
         timing,
       });
@@ -217,6 +296,15 @@ export async function runCli(
   }
 
   if (cmd === "test") {
+    if (mergeFlag) {
+      return fail(3, "vibehard test: unknown option --merge", cmd);
+    }
+    if (shardFlag) {
+      return fail(3, "vibehard test: unknown option --shard", cmd);
+    }
+    if (shardOutFlag) {
+      return fail(3, "vibehard test: unknown option --shard-out", cmd);
+    }
     if (jobsFlag) {
       return fail(3, "vibehard test: unknown option --jobs", cmd);
     }
@@ -254,6 +342,15 @@ export async function runCli(
   }
 
   if (cmd === "explain") {
+    if (mergeFlag) {
+      return fail(3, "vibehard explain: unknown option --merge", cmd);
+    }
+    if (shardFlag) {
+      return fail(3, "vibehard explain: unknown option --shard", cmd);
+    }
+    if (shardOutFlag) {
+      return fail(3, "vibehard explain: unknown option --shard-out", cmd);
+    }
     if (jobsFlag) {
       return fail(3, "vibehard explain: unknown option --jobs", cmd);
     }
