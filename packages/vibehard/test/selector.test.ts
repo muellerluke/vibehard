@@ -409,6 +409,97 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     expect(support.unsafeReason).toContain("e2e/support.ts");
   }, T);
 
+  it("AT-S09: editing a test helper selects exactly its importing specs", async () => {
+    const EXTRA_ID = "e2e/extra.spec.ts::extra coupon flow";
+    // Base commit gains a second spec importing three helpers (one
+    // two hops away through a barrel), a helper shared with the
+    // existing spec, and an unimported helper. The new test clones
+    // the coupon entry's touched set: the trust check compares symbol
+    // hashes only, so the clone is a faithful recorded entry for a
+    // spec that executes the same endpoint.
+    const dir = await makeGitCopy({
+      mutateBeforeCommit: (d) => {
+        writeFileSync(path.join(d, "e2e/helper-only.ts"), "export const helperOnly = 1;\n");
+        writeFileSync(path.join(d, "e2e/helper-shared.ts"), "export const helperShared = 1;\n");
+        writeFileSync(path.join(d, "e2e/helper-deep.ts"), "export const helperDeep = 1;\n");
+        writeFileSync(path.join(d, "e2e/barrel.ts"), 'export * from "./helper-deep";\n');
+        writeFileSync(path.join(d, "e2e/helper-orphan.ts"), "export const helperOrphan = 1;\n");
+        writeFileSync(
+          path.join(d, "e2e/extra.spec.ts"),
+          [
+            "import { expect, test } from 'vibehard/playwright';",
+            "import { helperOnly } from './helper-only';",
+            "import { helperShared } from './helper-shared';",
+            "import { helperDeep } from './barrel';",
+            "",
+            "test('extra coupon flow', async ({ request }) => {",
+            "  expect(helperOnly + helperShared + helperDeep).toBe(3);",
+            "  const response = await request.post('/api/coupons', { data: { code: 'SAVE10' } });",
+            "  expect(response.status()).toBe(200);",
+            "});",
+            "",
+          ].join("\n"),
+        );
+        edit(d, "e2e/checkout.spec.ts", (t) =>
+          `import { helperShared } from './helper-shared';\nvoid helperShared;\n${t}`);
+        const lockPath = path.join(d, "vibehard.lock.json");
+        const lock = readLockfile(lockPath);
+        if (lock === null) throw new Error("fixture lockfile missing");
+        const coupon = lock.tests[COUPON_ID];
+        if (coupon === undefined) throw new Error("coupon entry missing");
+        lock.tests[EXTRA_ID] = {
+          file: "e2e/extra.spec.ts",
+          titlePath: ["extra coupon flow"],
+          touched: { ...coupon.touched },
+          symbolHashes: { ...coupon.symbolHashes },
+        };
+        writeLockfile(lockPath, lock);
+      },
+    });
+    const select = (): ReturnType<typeof selectTests> => selectTests({ rootDir: dir });
+    const reset = async (rel: string): Promise<void> => {
+      await git(dir, ["checkout", "--", rel]);
+    };
+
+    // (a) A helper only the new spec imports selects only its tests.
+    edit(dir, "e2e/helper-only.ts", (t) => t.replace("= 1", "= 2"));
+    const only = await select();
+    expect(only.unsafeReasons).toEqual([]);
+    expect(selectedIds(only)).toEqual([EXTRA_ID]);
+    expect(only.selected[0]?.reasons).toContainEqual({
+      type: "test-support-changed",
+      file: "e2e/helper-only.ts",
+    });
+    await reset("e2e/helper-only.ts");
+
+    // (b) A helper both specs import selects every test.
+    edit(dir, "e2e/helper-shared.ts", (t) => t.replace("= 1", "= 2"));
+    const shared = await select();
+    expect(shared.unsafeReasons).toEqual([]);
+    expect(selectedIds(shared).sort()).toEqual([CHECKOUT_ID, COUPON_ID, EXTRA_ID].sort());
+    await reset("e2e/helper-shared.ts");
+
+    // (c) Reachability is transitive through the barrel re-export.
+    edit(dir, "e2e/helper-deep.ts", (t) => t.replace("= 1", "= 2"));
+    const deep = await select();
+    expect(deep.unsafeReasons).toEqual([]);
+    expect(selectedIds(deep)).toEqual([EXTRA_ID]);
+    await reset("e2e/helper-deep.ts");
+
+    // (d) A deleted helper stays unsafe (no head importers to prove).
+    rmSync(path.join(dir, "e2e/helper-orphan.ts"));
+    const deleted = await select();
+    expect(deleted.unsafeReason).toContain("e2e/helper-orphan.ts (test support file)");
+    await reset("e2e/helper-orphan.ts");
+
+    // (e) A non-literal dynamic import in a helper voids the mapping.
+    edit(dir, "e2e/helper-shared.ts", (t) =>
+      t.replace("= 1", "= 2") + "export const load = (name: string) => import(name);\n");
+    const dynamic = await select();
+    expect(dynamic.unsafeReason).toContain("e2e/helper-shared.ts (test support file)");
+    expect(dynamic.diagnostics.join(" ")).toContain("test-support mapping unavailable");
+  }, T);
+
   it("a tampered lockfile hash makes selection unsafe (stale)", async () => {
     const dir = await makeGitCopy();
     const lockPath = path.join(dir, "vibehard.lock.json");

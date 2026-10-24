@@ -30,8 +30,10 @@ a mismatch fails the benchmark.
 | `large` | selection (Puppeteer) | 3,000 | 3,000 | 150 |
 | `record-smoke` | recordable (Playwright) | 20 | 10 | observed |
 
-Useful flags: `--scenario none|leaf|shared|spec` (default `leaf`),
-`--repetitions N`, `--seed N`, `--out FILE` (JSON report), `--keep`
+Useful flags: `--scenario none|leaf|shared|spec|support` (default
+`leaf`; `support` mutates one generated test-helper group and
+expects exactly that group's specs), `--repetitions N`, `--seed N`,
+`--out FILE` (JSON report), `--keep`
 (retain the generated fixture for inspection), and generation
 overrides such as `--files`, `--spec-files`, `--tests-per-spec`,
 `--touched-per-test`.

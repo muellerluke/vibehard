@@ -31,6 +31,7 @@ import {
   type ChangedFile,
 } from "./git.js";
 import { fastSelectEnabled, selectTestsFast } from "./fast-select.js";
+import { resolveChangedSupportFiles, supportFilesBySpec } from "./support-graph.js";
 import type {
   DiscoveredTestRef,
   SelectedTest,
@@ -172,7 +173,8 @@ export function lockfileTrustReasons(input: TrustInput): string[] {
  * inverted index. Shared by the full-index and fast selection paths
  * so both produce identical selections: tests stay in discovery
  * order, and each test's reasons are ordered test-file-changed,
- * always-run, then unrecorded or changed symbols sorted by ID.
+ * test-support-changed, always-run, then unrecorded or changed
+ * symbols sorted by ID.
  */
 export function intersectSelection(input: {
   discovered: readonly ListedTest[];
@@ -180,6 +182,8 @@ export function intersectSelection(input: {
   symbolIndex: SymbolTestIndex;
   changedSymbols: ReadonlySet<SymbolId>;
   changedSpecFiles: ReadonlySet<string>;
+  /** Spec file -> changed support files it transitively imports. */
+  changedSupportBySpec?: ReadonlyMap<string, readonly string[]>;
 }): SelectedTest[] {
   const changedReasons = new Map<string, SelectionReason[]>();
   for (const id of [...input.changedSymbols].sort()) {
@@ -196,6 +200,9 @@ export function intersectSelection(input: {
     if (input.changedSpecFiles.has(test.relFile)) {
       reasons.push({ type: "test-file-changed", file: test.relFile });
     }
+    for (const file of input.changedSupportBySpec?.get(test.relFile) ?? []) {
+      reasons.push({ type: "test-support-changed", file });
+    }
     if (entry?.alwaysRun !== undefined) {
       reasons.push({ type: "always-run", reason: entry.alwaysRun });
     }
@@ -207,6 +214,46 @@ export function intersectSelection(input: {
     if (reasons.length > 0) selected.push({ ...toRef(test), reasons });
   }
   return selected;
+}
+
+/**
+ * Resolve changed test-support files into selection inputs, shared by
+ * both selection paths so the mapping (and its diagnostics) cannot
+ * diverge. Files absent from `mappedFiles` keep the unsafe full run.
+ */
+export function resolveChangedSupportSelection(input: {
+  rootDir: string;
+  testDirPosix: string | null;
+  specFiles: ReadonlySet<string>;
+  changedSupport: readonly ChangedFile[];
+  timer: PhaseTimer;
+  diagnostics: string[];
+}): { mappedFiles: ReadonlySet<string>; bySpec: Map<string, string[]> } {
+  if (input.changedSupport.length === 0) {
+    return { mappedFiles: new Set(), bySpec: new Map() };
+  }
+  const result = input.timer.runSync(
+    "support.graph",
+    () =>
+      resolveChangedSupportFiles({
+        rootDir: input.rootDir,
+        testDirPosix: input.testDirPosix,
+        specFiles: [...input.specFiles],
+        changedSupport: input.changedSupport,
+      }),
+    (r) => ({
+      files: r.stats.filesParsed,
+      edges: r.stats.edges,
+      specs: r.stats.specsMapped,
+    }),
+  );
+  for (const problem of result.problems) {
+    input.diagnostics.push(`test-support mapping unavailable: ${problem}`);
+  }
+  return {
+    mappedFiles: new Set(result.mapped.keys()),
+    bySpec: supportFilesBySpec(result.mapped),
+  };
 }
 
 /**
@@ -322,17 +369,29 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
     if (s.kind === "asset") assetFiles.add(s.file);
   }
 
+  const classifyCtx = {
+    ignore: resolved.ignore,
+    include: resolved.include,
+    testDirPosix: resolved.testDirPosix,
+    specFiles,
+    lockfileRel,
+    assetFiles,
+  };
+  const supportSelection = resolveChangedSupportSelection({
+    rootDir,
+    testDirPosix: resolved.testDirPosix,
+    specFiles,
+    changedSupport: changedFiles.filter(
+      (c) => classifyChangedFile(c.file, classifyCtx) === "test-support",
+    ),
+    timer,
+    diagnostics,
+  });
+
   const endChangedSymbols = timer.span("selection.changedSymbols");
   try {
     for (const change of changedFiles) {
-      const kind = classifyChangedFile(change.file, {
-        ignore: resolved.ignore,
-        include: resolved.include,
-        testDirPosix: resolved.testDirPosix,
-        specFiles,
-        lockfileRel,
-        assetFiles,
-      });
+      const kind = classifyChangedFile(change.file, classifyCtx);
       switch (kind) {
         case "ignored":
           break;
@@ -346,7 +405,9 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
           changedSpecFiles.add(change.file);
           break;
         case "test-support":
-          unsafeReasons.push(`unsafe: unmapped change: ${change.file} (test support file)`);
+          if (!supportSelection.mappedFiles.has(change.file)) {
+            unsafeReasons.push(`unsafe: unmapped change: ${change.file} (test support file)`);
+          }
           break;
         case "unmapped":
           unsafeReasons.push(`unsafe: unmapped change: ${change.file}`);
@@ -424,7 +485,14 @@ async function selectTestsFull(options: SelectOptions): Promise<SelectionResult>
   });
 
   const endIntersect = timer.span("selection.intersect");
-  const selected = intersectSelection({ discovered, lock, symbolIndex, changedSymbols, changedSpecFiles });
+  const selected = intersectSelection({
+    discovered,
+    lock,
+    symbolIndex,
+    changedSymbols,
+    changedSpecFiles,
+    changedSupportBySpec: supportSelection.bySpec,
+  });
   endIntersect({ tests: discovered.length, selected: selected.length });
 
   return {

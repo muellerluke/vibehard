@@ -85,7 +85,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--help") {
       process.stdout.write(
-        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec] [--repetitions N] [--seed N] [--out FILE] [--keep] [--fast-select] [--cold-cache] [--jobs N] [--no-timing] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
+        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec|support] [--repetitions N] [--seed N] [--out FILE] [--keep] [--fast-select] [--cold-cache] [--jobs N] [--no-timing] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
       );
       process.exit(0);
     }

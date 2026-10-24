@@ -127,6 +127,44 @@ describe("Phase 3c incremental record (AT-S07)", () => {
   );
 
   it(
+    "AT-S09 helper edit: re-observes only importing specs, agrees with full record and verify --ci",
+    async () => {
+      const EXTRA_ID = "e2e/extra.spec.ts::extra coupon flow";
+      const dir = await makeGitCopy();
+      // Grow the suite with a helper only the new spec imports, record
+      // it genuinely, and commit that as the base for the mutation.
+      writeFileSync(path.join(dir, "e2e/helper-only.ts"), "export const helperOnly = 1;\n");
+      writeFileSync(
+        path.join(dir, "e2e/extra.spec.ts"),
+        [
+          "import { expect, test } from 'vibehard/playwright';",
+          "import { helperOnly } from './helper-only';",
+          "",
+          "test('extra coupon flow', async ({ request }) => {",
+          "  expect(helperOnly).toBeGreaterThan(0);",
+          "  const response = await request.post('/api/coupons', { data: { code: 'SAVE10' } });",
+          "  expect(response.status()).toBe(200);",
+          "});",
+          "",
+        ].join("\n"),
+      );
+      const grown = await recordProject({ rootDir: dir });
+      expect(grown.exitCode, JSON.stringify(grown.results, null, 2)).toBe(0);
+      expect(grown.results.map((r) => r.testId)).toContain(EXTRA_ID);
+      await git(dir, ["add", "-A"]);
+      await git(dir, ["commit", "-m", "add extra spec"]);
+
+      edit(dir, "e2e/helper-only.ts", (t) => t.replace("= 1", "= 2"));
+      const incremental = await expectIncrementalEqualsFull(dir);
+      expect(incremental.results.map((r) => r.testId)).toEqual([EXTRA_ID]);
+
+      const verified = await verifyProject({ rootDir: dir, ci: true });
+      expect(verified.exitCode, verified.lockfile.drift.join("\n")).toBe(0);
+    },
+    T,
+  );
+
+  it(
     "no change: observes nothing and leaves the lockfile untouched",
     async () => {
       const dir = await makeGitCopy();

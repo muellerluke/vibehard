@@ -85,6 +85,12 @@ branch by default, and `ignore` globs for paths that may change freely.
 same exact result, proven by parity tests, with automatic fallback
 to full indexing on any inconsistency. Its parse cache lives under
 the git common dir and can be disabled with `VIBEHARD_NO_CACHE=1`.
+A change to a test helper under `testDir` selects exactly the specs
+that statically (transitively) import it (reason
+`test-support-changed`); anything the static import graph cannot
+prove — a helper no spec imports, a deleted or non-source support
+file, a computed `import()`/`require()`, an unresolvable local
+import — still runs the full suite.
 
 Running plain `playwright test` is unaffected; the adapter only observes
 when invoked through the vibehard CLI. Recording observes each test
@@ -110,6 +116,15 @@ accepts `--jobs` and `--shard` too. `--incremental` refuses when
 selection is unsafe (run a full record), and should be paired with a
 scheduled full `vibehard verify` since it trusts the selection model
 for tests it does not re-observe.
+
+In a monorepo, use one `vibehard.config` and lockfile per app, narrow
+`include` to that app, and run vibehard per app in CI. Shared
+workspace packages an app executes must lie inside the app's project
+root (or be matched by `include`): source outside the indexed root
+is invisible to recording and selection, so changes to it cannot be
+mapped. Serving several frontends/backends from one root is
+supported from a single project (see the two-frontends example);
+indexing several source roots into one lockfile is not supported.
 
 ## Usage (Puppeteer)
 

@@ -30,7 +30,7 @@ jobs:
           test/indexer.test.ts test/ast-forms.test.ts test/init.test.ts
           test/observer.test.ts test/timing.test.ts test/perf-fixture.test.ts
           test/playwright-adapter.test.ts test/puppeteer-adapter.test.ts
-          test/delegation.test.ts
+          test/delegation.test.ts test/support-graph.test.ts
       - run: npx vibehard --help
   examples:
     runs-on: ubuntu-latest

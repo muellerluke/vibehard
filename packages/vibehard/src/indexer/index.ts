@@ -258,6 +258,127 @@ export function isIndexableFile(relPosix: string): boolean {
   return isIndexablePath(relPosix);
 }
 
+/** Literal module specifiers and unprovable loading forms in one file. */
+export interface ModuleEdgeScan {
+  /** Specifiers from provable literal edge forms, sorted and deduped. */
+  specifiers: string[];
+  /** Descriptions of module-loading forms with no literal specifier. */
+  unprovable: string[];
+}
+
+export type ModuleResolution =
+  | { kind: "project"; file: string }
+  | { kind: "external" }
+  | { kind: "unresolved" };
+
+/**
+ * Parse-only module scanning and resolution against the project's own
+ * TypeScript copy and parsed `tsconfig` options — no Program. Used by
+ * the selector's test-support graph; `indexProject` remains the
+ * implementation of record for app code.
+ */
+export interface ModuleResolver {
+  readonly typescriptVersion: string;
+  /** Scan one file's text for module edges (never reads disk). */
+  scanImports(relPosix: string, text: string): ModuleEdgeScan;
+  /**
+   * Resolve `specifier` as imported by `fromRelPosix`. `project` is a
+   * project-relative POSIX source file; `external` resolved to a
+   * package or to a file outside the project source set.
+   */
+  resolveSpecifier(fromRelPosix: string, specifier: string): ModuleResolution;
+}
+
+export function createModuleResolver(rootDir: string): ModuleResolver {
+  const root = path.resolve(rootDir);
+  const tsApi = loadTypeScript(root);
+  const { compilerOptions } = loadProgramInputs(tsApi, root);
+  return {
+    typescriptVersion: tsApi.version,
+    scanImports(relPosix: string, text: string): ModuleEdgeScan {
+      const sourceFile = tsApi.createSourceFile(
+        relPosix,
+        text,
+        tsApi.ScriptTarget.Latest,
+        true,
+        scriptKindForFile(tsApi, relPosix),
+      );
+      return scanModuleEdges(tsApi, sourceFile);
+    },
+    resolveSpecifier(fromRelPosix: string, specifier: string): ModuleResolution {
+      const resolved = tsApi.resolveModuleName(
+        specifier,
+        path.resolve(root, fromRelPosix),
+        compilerOptions,
+        tsApi.sys,
+      ).resolvedModule;
+      if (resolved === undefined) return { kind: "unresolved" };
+      if (resolved.isExternalLibraryImport) return { kind: "external" };
+      const rel = relativePosix(root, resolved.resolvedFileName);
+      if (rel === null || !isIndexablePath(rel)) return { kind: "external" };
+      return { kind: "project", file: rel };
+    },
+  };
+}
+
+function literalSpecifier(tsApi: typeof ts, node: ts.Node | undefined): string | null {
+  if (node === undefined) return null;
+  return tsApi.isStringLiteral(node) || tsApi.isNoSubstitutionTemplateLiteral(node)
+    ? node.text
+    : null;
+}
+
+/**
+ * Every module edge in a file, classified. Provable forms carry a
+ * literal specifier; anything that loads a computed specifier is
+ * reported so callers can fail closed instead of guessing its target.
+ */
+function scanModuleEdges(tsApi: typeof ts, sourceFile: ts.SourceFile): ModuleEdgeScan {
+  const specifiers = new Set<string>();
+  const unprovable: string[] = [];
+  const addCallEdge = (node: ts.CallExpression, form: string): void => {
+    const specifier = literalSpecifier(tsApi, node.arguments[0]);
+    if (specifier === null) unprovable.push(`${form} with a non-literal specifier`);
+    else specifiers.add(specifier);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      (tsApi.isImportDeclaration(node) || tsApi.isExportDeclaration(node)) &&
+      node.moduleSpecifier !== undefined
+    ) {
+      const specifier = literalSpecifier(tsApi, node.moduleSpecifier);
+      if (specifier === null) unprovable.push("import with a non-literal specifier");
+      else specifiers.add(specifier);
+    } else if (
+      tsApi.isImportEqualsDeclaration(node) &&
+      tsApi.isExternalModuleReference(node.moduleReference)
+    ) {
+      const specifier = literalSpecifier(tsApi, node.moduleReference.expression);
+      if (specifier === null) unprovable.push("require with a non-literal specifier");
+      else specifiers.add(specifier);
+    } else if (tsApi.isCallExpression(node)) {
+      const callee = node.expression;
+      if (callee.kind === tsApi.SyntaxKind.ImportKeyword) {
+        addCallEdge(node, "dynamic import()");
+      } else if (tsApi.isIdentifier(callee) && callee.text === "require") {
+        addCallEdge(node, "require()");
+      } else if (
+        tsApi.isPropertyAccessExpression(callee) &&
+        tsApi.isIdentifier(callee.expression) &&
+        callee.expression.text === "require" &&
+        callee.name.text === "resolve"
+      ) {
+        addCallEdge(node, "require.resolve()");
+      } else if (tsApi.isIdentifier(callee) && callee.text === "createRequire") {
+        unprovable.push("createRequire() module loading");
+      }
+    }
+    tsApi.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { specifiers: [...specifiers].sort(), unprovable };
+}
+
 /** Dedupe by symbol ID (earliest in source order wins), sorted by ID. */
 export function dedupeSymbols(symbols: readonly SymbolRecord[]): SymbolRecord[] {
   return dedupeAndSort([...symbols]);

@@ -1,14 +1,17 @@
 # Scaling Vibehard to Large Repositories
 
-Status: **Phases 0–4 implemented** (Phase 1 shipped opt-in behind
+Status: **Phases 0–5 implemented** (Phase 1 shipped opt-in behind
 `--fast-select`; Phase 2 lockfile v3 auto-migrates v2 files on the
 next write; Phase 3a–c ship `--jobs` lanes, `--shard`/`--merge`
 artifacts, and `record --incremental`; Phase 4 ships chunked
 delegation, streaming/bounded run output, and file-based Playwright
-discovery; see the per-phase "results" sections below, including a
+discovery; Phase 5 ships test-support mapping and monorepo scoping
+docs; see the per-phase "results" sections below, including a
 before/after benchmark against the pre-scaling baseline under
 "Phase 3 results").
-Phase 5 remains a proposal. This document collects the
+Only the optional finer config classification (Phase 5's third
+bullet) and the 3d server-reuse spike remain proposals. This
+document collects the
 performance analysis and the phased plan for making `vibehard` usable in
 repositories with thousands of e2e tests and thousands of source files.
 It is a companion to [MANIFEST.md](MANIFEST.md), whose Stage 7
@@ -1062,6 +1065,81 @@ The fallback is safe but expensive; at scale it must be rare.
   other than dependencies and scripts) — only with an allowlist and
   fail-closed parsing. Not required for scale; listed so it is not
   done ad hoc.
+
+#### Phase 5 results (implemented, measured 2026-10-24)
+
+Implemented in `packages/vibehard/src/selector/support-graph.ts`
+(new: `resolveChangedSupportFiles`, `supportFilesBySpec`) over a
+parse-only module resolver exported from the indexer
+(`createModuleResolver`: `scanImports` + `resolveSpecifier` on the
+project's own TypeScript copy and parsed `tsconfig` options, no
+Program), wired identically into both selection paths via one
+shared helper (`resolveChangedSupportSelection` in
+`selector/select.ts`, timing phase `support.graph`). Selected tests
+gain the additive reason `test-support-changed`. No lockfile,
+config, `INDEXER_VERSION`, or CLI change, and no opt-in flag: the
+mapped subset is provable and every other support change keeps
+today's exact unsafe string and full run.
+
+Deviations from the sketch above, each in the safe direction:
+
+- **Scope** is exactly today's `test-support` classification
+  (non-spec files under `testDir`); `classifyChangedFile` is
+  unchanged. Helpers outside `testDir` (shared `test-utils/`,
+  Cypress's `cypress/support/`, which sits outside its
+  `cypress/e2e` testDir) keep their current handling.
+- **No framework-config roots.** Framework configs are never parsed
+  or executed to find global setup files. Instead a changed support
+  file with zero importing specs stays unmapped, which covers
+  implicitly loaded setup/support files inside `testDir` — the
+  pre-existing "unimported `e2e/support.ts` is unsafe" test passes
+  unchanged.
+- **Narrow eligibility:** only source files changed by edit/addition
+  map. Deleted helpers stay unsafe (a head graph cannot see their
+  old importers — head-only edges are sound for edits because
+  removing an edge means editing the importing file, which is then
+  itself a changed spec/support/app file). Non-source fixture files
+  stay unsafe (commonly `fs`-read; an import graph cannot disprove
+  that).
+- **Bounded traversal:** nodes are discovered specs plus files under
+  `testDir`; edges into app code are leaves, so page objects
+  importing app constants never pull in the app graph, and a helper
+  reachable only through app code has zero importers and stays
+  unmapped. Any non-literal `import()`/`require()`, `createRequire`,
+  unreadable file, or unresolvable local/alias specifier in a
+  traversed file voids the whole mapping (diagnostic
+  `test-support mapping unavailable: …`); unresolved bare package
+  specifiers are external leaves. The graph is built lazily, only
+  when an eligible support change exists, and any internal failure
+  degrades to unmapped rather than throwing.
+- **No resolution cache.** Measured first, per below; revisit only
+  if `support.graph` shows up dominating a real profile.
+
+Gate: AT-S09 passes over a two-spec tiny-app mutation series
+(exclusive helper, shared helper, two-hop barrel chain, deleted
+helper, non-literal dynamic import) in `test/selector.test.ts`,
+with fast/full parity over the mapped and unprovable cases in
+`test/fast-select.test.ts` (AT-S02 list extended; AT-S03's zero
+Program/worktree assertion unaffected), graph-unit coverage in
+`test/support-graph.test.ts`, and an incremental-record mutation
+(helper edit re-observes only the importing spec, lockfile equal to
+full record, `verify --ci` clean) in `test/record-incremental.test.ts`.
+Monorepo scoping ships as documentation in both READMEs (one config
+and lockfile per app, narrowed `include`, per-app CI runs, shared
+packages inside the indexed root); no config ergonomics code was
+needed. Finer config classification stays deferred as proposed.
+
+Perf (new `support` scenario in the scale fixture: every spec
+imports a shared helper and its group helper; mutating one group
+helper must select exactly that group's specs — the runner checks
+the generator's ground truth each repetition): at `large`
+(3,000 tests, 300 spec files, 450k edges) with `--fast-select`,
+wall median 1,486 ms and selection total 1,127 ms (≈1,066 ms
+excluding discovery — inside the AT-S04 ≤2 s budget), of which
+`support.graph` is 132 ms over 331 parsed test files; exactly 100
+tests (one group) selected. The `leaf` scenario on the same
+fixture shows no `support.graph` phase and a 1,058 ms selection
+total, confirming zero cost when no support file changed.
 
 ## Sequencing and expected impact
 

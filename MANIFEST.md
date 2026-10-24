@@ -592,6 +592,20 @@ Hardening:
   lockfile and verdict as full record followed by `verify --ci`;
   incremental record refuses when selection is unsafe or the
   lockfile is missing (`test/record-incremental.test.ts`).
+- AT-S08: a selection larger than the argv byte budget delegates in
+  chunks with the same executed test IDs and pass/fail result as one
+  unchunked run, and a `proveFilter` mismatch in any chunk falls
+  back to a full run (`test/delegation.test.ts`,
+  `test/delegation-chunks.test.ts`).
+- AT-S09: editing a test helper selects exactly the specs that
+  transitively import it (reason `test-support-changed`), identically
+  under full and `--fast-select` selection; helpers with no importing
+  spec, deleted or non-source support files, and any
+  unresolvable/dynamic import in the test graph still force a full
+  run; `record --incremental` on a helper edit re-observes only the
+  importing specs and reaches the full-record lockfile
+  (`test/support-graph.test.ts`, `test/selector.test.ts`,
+  `test/fast-select.test.ts`, `test/record-incremental.test.ts`).
 
 ## Validation Plan
 

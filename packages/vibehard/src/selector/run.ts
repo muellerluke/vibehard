@@ -610,6 +610,8 @@ function reasonText(reason: SelectedTest["reasons"][number]): string {
       return "not in lockfile (unrecorded)";
     case "test-file-changed":
       return `test file changed (${reason.file})`;
+    case "test-support-changed":
+      return `test support file changed (${reason.file})`;
   }
 }
 

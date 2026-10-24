@@ -157,11 +157,42 @@ function generateSources(root, params) {
   return { sharedRels, moduleRels };
 }
 
+const SUPPORT_GROUP_SIZE = 10;
+
 function generateSpecs(root, params) {
+  // Test-support helpers (Phase 5): every spec imports a shared helper
+  // and its group's helper, so the `support` scenario can mutate one
+  // group helper and expect exactly that group's specs to select.
+  const playwright = params.framework === "playwright";
+  const helperExt = playwright ? "ts" : "mjs";
+  const helperSuffix = playwright ? "js" : "mjs";
+  const groupCount = Math.max(1, Math.ceil(params.specFiles / SUPPORT_GROUP_SIZE));
+  write(root, `e2e/support/shared.${helperExt}`, `export const sharedSupport = "shared";\n`);
+  for (let g = 0; g < groupCount; g += 1) {
+    write(
+      root,
+      `e2e/support/group-${pad(g, 3)}.${helperExt}`,
+      `export const groupSupport${g} = "group-${g}";\n`,
+    );
+  }
+  const supportGroup = groupCount > 1 ? 1 : 0;
+  const support = {
+    file: `e2e/support/group-${pad(supportGroup, 3)}.${helperExt}`,
+    specFiles: [],
+  };
+
   for (let s = 0; s < params.specFiles; s += 1) {
+    const group = Math.floor(s / SUPPORT_GROUP_SIZE);
     const lines = [];
+    const supportImports = [
+      `import { sharedSupport } from "./support/shared.${helperSuffix}";`,
+      `import { groupSupport${group} } from "./support/group-${pad(group, 3)}.${helperSuffix}";`,
+      `void sharedSupport;`,
+      `void groupSupport${group};`,
+      "",
+    ];
     if (params.framework === "playwright") {
-      lines.push(`import { test } from "vibehard/playwright";`, "");
+      lines.push(`import { test } from "vibehard/playwright";`, ...supportImports);
       for (let t = 0; t < params.testsPerSpec; t += 1) {
         const n = s * params.testsPerSpec + t;
         lines.push(
@@ -172,8 +203,9 @@ function generateSpecs(root, params) {
         );
       }
       write(root, `e2e/spec${pad(s, 3)}.spec.ts`, lines.join("\n"));
+      if (group === supportGroup) support.specFiles.push(`e2e/spec${pad(s, 3)}.spec.ts`);
     } else {
-      lines.push(`import { describeTest } from "vibehard/puppeteer";`, "");
+      lines.push(`import { describeTest } from "vibehard/puppeteer";`, ...supportImports);
       for (let t = 0; t < params.testsPerSpec; t += 1) {
         const n = s * params.testsPerSpec + t;
         lines.push(
@@ -184,8 +216,10 @@ function generateSpecs(root, params) {
         );
       }
       write(root, `e2e/spec${pad(s, 3)}.test.mjs`, lines.join("\n"));
+      if (group === supportGroup) support.specFiles.push(`e2e/spec${pad(s, 3)}.test.mjs`);
     }
   }
+  return support;
 }
 
 function writeProjectFiles(root, params, { recordable }) {
@@ -533,8 +567,8 @@ export function applyScenario(root, manifest, scenario) {
   }
   const file = path.join(root, info.file);
   const text = readFileSync(file, "utf8");
-  if (scenario === "spec") {
-    writeFileSync(file, `${text}// perf spec mutation\n`);
+  if (scenario === "spec" || scenario === "support") {
+    writeFileSync(file, `${text}// perf ${scenario} mutation\n`);
     return info;
   }
   const qualified = info.symbolId.slice(info.symbolId.indexOf("#") + 1);
@@ -598,10 +632,10 @@ export async function generateFixture(options = {}) {
         lockfileBytes: 0,
       },
       touched: { min: 0, max: 0, mean: 0 },
-      scenarios: { leaf: null, shared: null, spec: null },
+      scenarios: { leaf: null, shared: null, spec: null, support: null },
     };
   } else {
-    generateSpecs(outDir, params);
+    const support = generateSpecs(outDir, params);
     const { resolved, symbols, discovered, lock, touchCounts } = await writeSyntheticLockfile(
       outDir,
       params,
@@ -640,6 +674,16 @@ export async function generateFixture(options = {}) {
                 symbolId: null,
                 expectedTestIds: discovered
                   .filter((t) => t.relFile === firstSpec.relFile)
+                  .map((t) => t.testId),
+              },
+        support:
+          discovered.length === 0
+            ? null
+            : {
+                file: support.file,
+                symbolId: null,
+                expectedTestIds: discovered
+                  .filter((t) => support.specFiles.includes(t.relFile))
                   .map((t) => t.testId),
               },
       },

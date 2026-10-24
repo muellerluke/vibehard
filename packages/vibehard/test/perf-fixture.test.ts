@@ -127,7 +127,7 @@ describe("Phase 0 perf fixture generator", () => {
     expect(clean.discovered).toHaveLength(6);
   }, T);
 
-  it("leaf, shared, and spec scenarios select their expected tests", async () => {
+  it("leaf, shared, spec, and support scenarios select their expected tests", async () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
 
     for (const scenario of ["leaf", "shared"] as const) {
@@ -144,6 +144,26 @@ describe("Phase 0 perf fixture generator", () => {
         );
       } finally {
         await git(["checkout", "--", info.file]);
+      }
+    }
+
+    const support = manifest.scenarios["support"];
+    expect(support).not.toBeNull();
+    if (support !== null && support !== undefined) {
+      const file = path.join(outDir, support.file);
+      writeFileSync(file, `${readFileSync(file, "utf8")}// perf support mutation\n`);
+      try {
+        const selection = await selectTests({ rootDir: outDir, timing: false });
+        expect(selection.unsafeReasons).toEqual([]);
+        expect(selection.selected.map((t) => t.testId).sort()).toEqual(
+          [...support.expectedTestIds].sort(),
+        );
+        expect(selection.selected[0]?.reasons).toContainEqual({
+          type: "test-support-changed",
+          file: support.file,
+        });
+      } finally {
+        await git(["checkout", "--", support.file]);
       }
     }
 

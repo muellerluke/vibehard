@@ -7,7 +7,8 @@ export type SelectionReason =
   | { type: "changed-symbol"; symbol: SymbolId; via: TouchKind }
   | { type: "always-run"; reason: string }
   | { type: "unrecorded" }
-  | { type: "test-file-changed"; file: string };
+  | { type: "test-file-changed"; file: string }
+  | { type: "test-support-changed"; file: string };
 
 export interface DiscoveredTestRef {
   testId: string;

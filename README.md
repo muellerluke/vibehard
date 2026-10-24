@@ -69,7 +69,13 @@ branch by default, and `ignore` globs for paths that may change freely.
 same exact result, proven by parity tests, with automatic fallback
 to full indexing on any inconsistency (see [SCALING.md](SCALING.md)
 Phase 1). Its parse cache lives under the git common dir and can be
-disabled with `VIBEHARD_NO_CACHE=1`.
+disabled with `VIBEHARD_NO_CACHE=1`. A change to a test helper under
+`testDir` selects exactly the specs that statically (transitively)
+import it (reason `test-support-changed`; [SCALING.md](SCALING.md)
+Phase 5); anything the static import graph cannot prove — a helper
+no spec imports, a deleted or non-source support file, a computed
+`import()`/`require()`, an unresolvable local import — still runs
+the full suite.
 
 Delegating a large selected set has no command-line or memory
 ceiling: `vibehard test` splits the run into argv-budget chunks
@@ -103,6 +109,15 @@ selection is unsafe (run a full record), and should be paired with a
 scheduled full `vibehard verify` since it trusts the selection model
 for tests it does not re-observe. See [SCALING.md](SCALING.md) Phase 3
 for the merge contract and measurements.
+
+In a monorepo, use one `vibehard.config` and lockfile per app, narrow
+`include` to that app, and run vibehard per app in CI. Shared
+workspace packages an app executes must lie inside the app's project
+root (or be matched by `include`): source outside the indexed root
+is invisible to recording and selection, so changes to it cannot be
+mapped. Serving several frontends/backends from one root is the
+`examples/two-frontends` shape below; indexing several source roots
+into one lockfile is not supported.
 
 ## Usage (Puppeteer)
 

@@ -39,7 +39,12 @@ import {
   resolveGitRoot,
 } from "./git.js";
 import { ParseCache, parseCacheEnabled, parseCacheKey } from "./parse-cache.js";
-import { intersectSelection, lockfileTrustReasons, toRef } from "./select.js";
+import {
+  intersectSelection,
+  lockfileTrustReasons,
+  resolveChangedSupportSelection,
+  toRef,
+} from "./select.js";
 import type { SelectionResult, SelectOptions } from "./types.js";
 
 /** Whether fast selection is on: explicit option wins over the env. */
@@ -532,6 +537,16 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   const headByFile = head.symbolsByFile;
   const changedSymbols = new Set<SymbolId>();
   const changedSpecFiles = new Set<string>();
+  const supportSelection = resolveChangedSupportSelection({
+    rootDir,
+    testDirPosix: resolved.testDirPosix,
+    specFiles,
+    changedSupport: changedFiles.filter(
+      (c) => classifyChangedFile(c.file, { ...classifyCtx, assetFiles }) === "test-support",
+    ),
+    timer,
+    diagnostics,
+  });
   const endChangedSymbols = timer.span("selection.changedSymbols");
   try {
     for (const change of changedFiles) {
@@ -549,7 +564,9 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
           changedSpecFiles.add(change.file);
           break;
         case "test-support":
-          unsafeReasons.push(`unsafe: unmapped change: ${change.file} (test support file)`);
+          if (!supportSelection.mappedFiles.has(change.file)) {
+            unsafeReasons.push(`unsafe: unmapped change: ${change.file} (test support file)`);
+          }
           break;
         case "unmapped":
           unsafeReasons.push(`unsafe: unmapped change: ${change.file}`);
@@ -602,7 +619,14 @@ export async function selectTestsFast(options: SelectOptions): Promise<Selection
   });
 
   const endIntersect = timer.span("selection.intersect");
-  const selected = intersectSelection({ discovered, lock, symbolIndex, changedSymbols, changedSpecFiles });
+  const selected = intersectSelection({
+    discovered,
+    lock,
+    symbolIndex,
+    changedSymbols,
+    changedSpecFiles,
+    changedSupportBySpec: supportSelection.bySpec,
+  });
   endIntersect({ tests: discovered.length, selected: selected.length });
 
   return {

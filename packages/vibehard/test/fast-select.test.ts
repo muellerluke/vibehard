@@ -191,6 +191,60 @@ describe("AT-S02: fast/full selection parity over mutations", () => {
     expect(fast.unsafeReasons).toEqual([]);
   }, T);
 
+  it("AT-S09 support helper edit (mapped and unprovable)", async () => {
+    const EXTRA_ID = "e2e/extra.spec.ts::extra coupon flow";
+    const COUPON_ID = "e2e/checkout.spec.ts::coupon api accepts a code";
+    // Same shape as the AT-S09 gate in selector.test.ts: a second
+    // spec with its own helper and a cloned recorded entry.
+    const dir = await makeGitCopy({
+      mutateBeforeCommit: (d) => {
+        write(d, "e2e/helper-only.ts", "export const helperOnly = 1;\n");
+        write(
+          d,
+          "e2e/extra.spec.ts",
+          [
+            "import { expect, test } from 'vibehard/playwright';",
+            "import { helperOnly } from './helper-only';",
+            "",
+            "test('extra coupon flow', async ({ request }) => {",
+            "  expect(helperOnly).toBe(1);",
+            "  const response = await request.post('/api/coupons', { data: { code: 'SAVE10' } });",
+            "  expect(response.status()).toBe(200);",
+            "});",
+            "",
+          ].join("\n"),
+        );
+        const lockPath = path.join(d, "vibehard.lock.json");
+        const lock = readLockfile(lockPath) as VibehardLockfile;
+        const coupon = lock.tests[COUPON_ID] as VibehardLockfile["tests"][string];
+        lock.tests[EXTRA_ID] = {
+          file: "e2e/extra.spec.ts",
+          titlePath: ["extra coupon flow"],
+          touched: { ...coupon.touched },
+          symbolHashes: { ...coupon.symbolHashes },
+        };
+        writeLockfile(lockPath, lock);
+      },
+    });
+
+    edit(dir, "e2e/helper-only.ts", (t) => t.replace("= 1", "= 2"));
+    const mappedFast = await expectParity(dir);
+    expect(mappedFast.unsafeReasons).toEqual([]);
+    expect(mappedFast.selected.map((t) => t.testId)).toEqual([EXTRA_ID]);
+    expect(mappedFast.selected[0]?.reasons).toContainEqual({
+      type: "test-support-changed",
+      file: "e2e/helper-only.ts",
+    });
+
+    await git(dir, ["checkout", "--", "e2e/helper-only.ts"]);
+    edit(dir, "e2e/helper-only.ts", (t) =>
+      t.replace("= 1", "= 2") + "export const load = (name: string) => import(name);\n");
+    const unprovableFast = await expectParity(dir);
+    expect(unprovableFast.unsafeReasons.join(" ")).toContain(
+      "e2e/helper-only.ts (test support file)",
+    );
+  }, T);
+
   it("config edit is unsafe", async () => {
     const dir = await makeGitCopy();
     edit(dir, "package.json", (t) => t.replace('"private": true', '"private": false'));
