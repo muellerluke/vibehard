@@ -1,15 +1,38 @@
 import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ResolvedConfig } from "./config.js";
+import {
+  ARGV_BUDGET_BYTES,
+  DELEGATED_RUN_TIMEOUT_MS,
+  OUTPUT_TAIL_BYTES,
+  argvBytes,
+  groupRunnableByFile,
+  packChunks,
+  type RunOutputMode,
+} from "./delegation.js";
 import type { FrameworkDriver } from "./driver.js";
 import { frameworkVersion } from "./lockfile.js";
-import { makeTestId, type ListedTest } from "./listed.js";
-import { spawnCapture, type SpawnCaptureResult } from "./servers.js";
+import { makeTestId, type ListedTest, type RunnableTestRef } from "./listed.js";
+import {
+  mergeSpawnResults,
+  spawnCapture,
+  spawnDelegated,
+  type SpawnCaptureResult,
+} from "./servers.js";
 import { VibehardUsageError } from "./types.js";
 
-export { freePort, spawnCapture, startAppServer, startServers } from "./servers.js";
+export {
+  freePort,
+  mergeSpawnResults,
+  spawnCapture,
+  spawnStreaming,
+  startAppServer,
+  startServers,
+} from "./servers.js";
 export type { AppServerSession, ServersSession, SpawnCaptureResult } from "./servers.js";
 export { makeTestId, readArtifacts } from "./listed.js";
 export type { ListedTest } from "./listed.js";
@@ -92,12 +115,36 @@ export async function listTests(
     "--reporter=json",
     ...playwrightTailArgs(resolved),
   ];
-  const result = await spawnCapture(process.execPath, args, { cwd: rootDir, timeoutMs: 120_000 });
-  const jsonAt = result.stdout.indexOf("{");
-  if (result.exitCode !== 0 || jsonAt < 0) {
-    throw new VibehardUsageError(
-      `vibehard: playwright test --list failed (exit ${result.exitCode})\n${result.stderr || result.stdout}`,
-    );
+  // The JSON report goes to a temp file (`PLAYWRIGHT_JSON_OUTPUT_FILE`
+  // takes precedence over the name/dir vars) instead of being buffered
+  // whole on stdout; at thousands of tests the report is megabytes.
+  const reportDir = await mkdtemp(path.join(tmpdir(), "vibehard-list-"));
+  const reportPath = path.join(reportDir, "report.json");
+  let reportText: string;
+  try {
+    const result = await spawnCapture(process.execPath, args, {
+      cwd: rootDir,
+      env: { PLAYWRIGHT_JSON_OUTPUT_FILE: reportPath },
+      timeoutMs: 120_000,
+    });
+    if (result.exitCode !== 0) {
+      throw new VibehardUsageError(
+        `vibehard: playwright test --list failed (exit ${result.exitCode})\n${result.stderr || result.stdout}`,
+      );
+    }
+    try {
+      reportText = await readFile(reportPath, "utf8");
+    } catch {
+      throw new VibehardUsageError(
+        `vibehard: playwright test --list failed (exit ${result.exitCode})\n${result.stderr || result.stdout || "no JSON report file was written"}`,
+      );
+    }
+  } finally {
+    await rm(reportDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  const jsonAt = reportText.indexOf("{");
+  if (jsonAt < 0) {
+    throw new VibehardUsageError("vibehard: could not parse playwright --list JSON output");
   }
   let report: {
     suites?: JsonSuite[];
@@ -105,7 +152,7 @@ export async function listTests(
     config?: { rootDir?: string; projects?: { testDir?: string }[] };
   };
   try {
-    report = JSON.parse(result.stdout.slice(jsonAt)) as typeof report;
+    report = JSON.parse(reportText.slice(jsonAt)) as typeof report;
   } catch {
     throw new VibehardUsageError("vibehard: could not parse playwright --list JSON output");
   }
@@ -194,10 +241,62 @@ export async function runSingleTest(input: {
   });
 }
 
+/** One delegated Playwright invocation's worth of selected tests. */
+export interface PlaywrightChunk {
+  tests: RunnableTestRef[];
+  positionals: string[];
+}
+
+/**
+ * Plan delegated Playwright invocations under an argv byte budget.
+ * A fully selected file becomes one bare-file positional; partial
+ * files contribute one `file:line` positional per test. `fixedBytes`
+ * accounts for the command and fixed args around the positionals.
+ */
+export function planPlaywrightChunks(
+  tests: readonly RunnableTestRef[],
+  discovered?: readonly RunnableTestRef[],
+  budgetBytes: number = ARGV_BUDGET_BYTES,
+  fixedBytes = 0,
+): PlaywrightChunk[] {
+  interface Unit {
+    tests: RunnableTestRef[];
+    positional: string;
+  }
+  const units: Unit[] = [];
+  for (const group of groupRunnableByFile(tests, discovered)) {
+    if (group.fullySelected) {
+      units.push({ tests: group.tests, positional: group.file });
+    } else {
+      for (const t of group.tests) units.push({ tests: [t], positional: `${t.file}:${t.line}` });
+    }
+  }
+  return packChunks(
+    units,
+    budgetBytes,
+    (chunk) => fixedBytes + argvBytes(chunk.map((u) => u.positional)),
+    (u) => u.positional,
+  ).map((chunk) => ({
+    tests: chunk.flatMap((u) => u.tests),
+    positionals: chunk.map((u) => u.positional),
+  }));
+}
+
+function fixedArgvBytes(cliPath: string, resolved: ResolvedConfig, list: boolean): number {
+  return argvBytes([
+    process.execPath,
+    cliPath,
+    "test",
+    ...(list ? ["--list", "--reporter=json"] : []),
+    ...playwrightTailArgs(resolved),
+  ]);
+}
+
 /**
  * Run Playwright plainly (no observation) for the given positionals:
  * an empty list runs the full suite, `file:line` entries run exactly
  * those tests. The project's own reporters and parallelism apply.
+ * This is one raw invocation; chunked delegation lives in the driver.
  */
 export async function runPlaywrightTests(input: {
   rootDir: string;
@@ -206,6 +305,7 @@ export async function runPlaywrightTests(input: {
   positionals: readonly string[];
   env: Record<string, string>;
   timeoutMs?: number;
+  output?: RunOutputMode;
 }): Promise<SpawnCaptureResult> {
   const args = [
     input.cliPath,
@@ -213,10 +313,12 @@ export async function runPlaywrightTests(input: {
     ...input.positionals,
     ...playwrightTailArgs(input.resolved),
   ];
-  return spawnCapture(process.execPath, args, {
+  return spawnDelegated(process.execPath, args, {
     cwd: input.rootDir,
     env: input.env,
-    timeoutMs: input.timeoutMs ?? 1_800_000,
+    timeoutMs: input.timeoutMs ?? DELEGATED_RUN_TIMEOUT_MS,
+    output: input.output ?? "capture",
+    tailBytes: OUTPUT_TAIL_BYTES,
   });
 }
 
@@ -230,22 +332,56 @@ export const playwrightDriver: FrameworkDriver = {
     listTests(rootDir, resolved, resolvePlaywrightCli(rootDir)),
   runSingleTest: ({ rootDir, resolved, test, env }) =>
     runSingleTest({ rootDir, cliPath: resolvePlaywrightCli(rootDir), resolved, test, env }),
-  runMany: ({ rootDir, resolved, tests, env }) =>
-    runPlaywrightTests({
-      rootDir,
-      cliPath: resolvePlaywrightCli(rootDir),
-      resolved,
-      positionals: tests === null ? [] : tests.map((t) => `${t.file}:${t.line}`),
-      env,
-    }),
-  proveFilter: async ({ rootDir, resolved, tests }) => {
-    const listed = await listTests(
-      rootDir,
-      resolved,
-      resolvePlaywrightCli(rootDir),
-      tests.map((t) => `${t.file}:${t.line}`),
+  runMany: async ({ rootDir, resolved, tests, env, discovered, argvBudgetBytes, output }) => {
+    const cliPath = resolvePlaywrightCli(rootDir);
+    if (tests === null) {
+      return runPlaywrightTests({
+        rootDir,
+        cliPath,
+        resolved,
+        positionals: [],
+        env,
+        ...(output !== undefined ? { output } : {}),
+      });
+    }
+    // Selected runs delegate in argv-budget chunks; every chunk runs
+    // even when an earlier one fails, so the executed set is exactly
+    // the proven set. The timeout budget applies per chunk.
+    const chunks = planPlaywrightChunks(
+      tests,
+      discovered,
+      argvBudgetBytes ?? ARGV_BUDGET_BYTES,
+      fixedArgvBytes(cliPath, resolved, false),
     );
-    const listedIds = listed.map((t) => t.testId).sort();
+    const results: SpawnCaptureResult[] = [];
+    for (const chunk of chunks) {
+      results.push(
+        await runPlaywrightTests({
+          rootDir,
+          cliPath,
+          resolved,
+          positionals: chunk.positionals,
+          env,
+          ...(output !== undefined ? { output } : {}),
+        }),
+      );
+    }
+    return mergeSpawnResults(results, output === "capture" || output === undefined ? undefined : OUTPUT_TAIL_BYTES);
+  },
+  proveFilter: async ({ rootDir, resolved, tests, discovered, argvBudgetBytes }) => {
+    const cliPath = resolvePlaywrightCli(rootDir);
+    const chunks = planPlaywrightChunks(
+      tests,
+      discovered,
+      argvBudgetBytes ?? ARGV_BUDGET_BYTES,
+      fixedArgvBytes(cliPath, resolved, true),
+    );
+    const listedIds: string[] = [];
+    for (const chunk of chunks) {
+      const listed = await listTests(rootDir, resolved, cliPath, chunk.positionals);
+      listedIds.push(...listed.map((t) => t.testId));
+    }
+    listedIds.sort();
     const selectedIds = tests.map((t) => t.testId).sort();
     return JSON.stringify(listedIds) === JSON.stringify(selectedIds)
       ? null

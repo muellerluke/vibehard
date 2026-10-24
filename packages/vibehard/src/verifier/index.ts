@@ -26,6 +26,8 @@ export {
   freePort,
   listTests,
   makeTestId,
+  mergeSpawnResults,
+  planPlaywrightChunks,
   playwrightDriver,
   playwrightTailArgs,
   readArtifacts,
@@ -33,16 +35,31 @@ export {
   runPlaywrightTests,
   runSingleTest,
   spawnCapture,
+  spawnStreaming,
   startAppServer,
   startServers,
 } from "./playwright-runner.js";
+export type { PlaywrightChunk } from "./playwright-runner.js";
+export { spawnDelegated, truncateToTail } from "./servers.js";
+export type { SpawnSink, SpawnStreamingOptions } from "./servers.js";
+export {
+  ARGV_BUDGET_BYTES,
+  DELEGATED_RUN_TIMEOUT_MS,
+  OUTPUT_TAIL_BYTES,
+  argvBytes,
+  groupRunnableByFile,
+  packChunks,
+} from "./delegation.js";
+export type { RunOutputMode, RunnableFileGroup } from "./delegation.js";
 export type { AppServerSession, ListedTest, ServersSession, SpawnCaptureResult } from "./playwright-runner.js";
 export { getFrameworkDriver } from "./driver.js";
 export type { FrameworkDriver, FrameworkName } from "./driver.js";
 export { toRunnableRef } from "./listed.js";
 export type { RunnableTestRef } from "./listed.js";
-export { puppeteerDriver } from "./puppeteer-runner.js";
-export { cypressDriver, encodeOnlyTitles, resolveCypressCli, ENV_ONLY_TITLES } from "./cypress-runner.js";
+export { planPuppeteerChunks, puppeteerDriver } from "./puppeteer-runner.js";
+export type { PuppeteerChunk } from "./puppeteer-runner.js";
+export { cypressDriver, encodeOnlyTitles, planCypressChunks, resolveCypressCli, ENV_ONLY_TITLES } from "./cypress-runner.js";
+export type { CypressChunk } from "./cypress-runner.js";
 export { discoverInFile, discoverStaticTests, findSpecFiles } from "./discovery.js";
 export type { StaticDiscoveryOptions } from "./discovery.js";
 export {

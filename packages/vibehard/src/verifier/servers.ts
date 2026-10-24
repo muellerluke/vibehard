@@ -11,6 +11,12 @@ export interface SpawnCaptureResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** Output was bounded to a tail; earlier bytes were dropped. */
+  truncated?: boolean;
+  /** Number of delegated chunk invocations merged into this result. */
+  chunks?: number;
+  /** Output was echoed live to the parent streams as it arrived. */
+  streamed?: boolean;
 }
 
 export interface SpawnCaptureOptions {
@@ -60,12 +66,12 @@ function spawnCaptureRaw(
       stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
     const stdoutChunks: Buffer[] = [];
-    let stderr = "";
+    const stderrChunks: Buffer[] = [];
     child.stdout?.on("data", (c: Buffer) => {
       stdoutChunks.push(c);
     });
     child.stderr?.on("data", (c: Buffer) => {
-      stderr += c.toString();
+      stderrChunks.push(c);
     });
     const timeoutMs = options.timeoutMs ?? 120_000;
     const killer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
@@ -75,12 +81,173 @@ function spawnCaptureRaw(
     });
     child.once("exit", (code) => {
       clearTimeout(killer);
-      resolve({ exitCode: code ?? 1, stdout: Buffer.concat(stdoutChunks), stderr });
+      resolve({
+        exitCode: code ?? 1,
+        stdout: Buffer.concat(stdoutChunks),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      });
     });
     if (options.input !== undefined && child.stdin !== null) {
       child.stdin.on("error", () => undefined);
       child.stdin.end(options.input);
     }
+  });
+}
+
+/** Minimal writable sink (a `process.stdout`-shaped stream). */
+export interface SpawnSink {
+  write(chunk: Buffer | string): unknown;
+}
+
+export interface SpawnStreamingOptions extends SpawnCaptureOptions {
+  /** Bytes retained per stream (the tail). Default 64 KiB. */
+  tailBytes?: number;
+  /** Echo output live as it arrives (tee). Default true. */
+  echo?: boolean;
+  /** Echo destinations; default the parent's stdout/stderr. */
+  stdout?: SpawnSink;
+  stderr?: SpawnSink;
+}
+
+/** Retains only the last `tailBytes` pushed, dropping from the front. */
+class TailBuffer {
+  readonly #tailBytes: number;
+  #chunks: Buffer[] = [];
+  #total = 0;
+  truncated = false;
+
+  constructor(tailBytes: number) {
+    this.#tailBytes = tailBytes;
+  }
+
+  push(chunk: Buffer): void {
+    this.#chunks.push(chunk);
+    this.#total += chunk.length;
+    while (this.#total > this.#tailBytes && this.#chunks.length > 0) {
+      this.truncated = true;
+      const excess = this.#total - this.#tailBytes;
+      const first = this.#chunks[0] as Buffer;
+      if (first.length <= excess) {
+        this.#chunks.shift();
+        this.#total -= first.length;
+      } else {
+        this.#chunks[0] = first.subarray(excess);
+        this.#total -= excess;
+      }
+    }
+  }
+
+  toString(): string {
+    return Buffer.concat(this.#chunks).toString("utf8");
+  }
+}
+
+/** Keep the byte tail of `text`; reports whether anything was dropped. */
+export function truncateToTail(text: string, tailBytes: number): { text: string; truncated: boolean } {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= tailBytes) return { text, truncated: false };
+  return { text: buf.subarray(buf.length - tailBytes).toString("utf8"), truncated: true };
+}
+
+/**
+ * Spawn a plain delegated run without holding its whole output in
+ * memory: chunks are optionally echoed live to the parent streams
+ * and only a bounded tail per stream is retained for the result
+ * (diagnostics / `--json`). Framework output pacing is the child's
+ * own; chunks are forwarded as they arrive. Observation runs do not
+ * use this — they need complete captured diagnostics per test.
+ */
+export function spawnStreaming(
+  command: string,
+  args: string[],
+  options: SpawnStreamingOptions,
+): Promise<SpawnCaptureResult> {
+  const tailBytes = options.tailBytes ?? 64 * 1024;
+  const echo = options.echo ?? true;
+  const outSink = options.stdout ?? process.stdout;
+  const errSink = options.stderr ?? process.stderr;
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    const outTail = new TailBuffer(tailBytes);
+    const errTail = new TailBuffer(tailBytes);
+    child.stdout?.on("data", (c: Buffer) => {
+      if (echo) outSink.write(c);
+      outTail.push(c);
+    });
+    child.stderr?.on("data", (c: Buffer) => {
+      if (echo) errSink.write(c);
+      errTail.push(c);
+    });
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    const killer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(killer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(killer);
+      resolve({
+        exitCode: code ?? 1,
+        stdout: outTail.toString(),
+        stderr: errTail.toString(),
+        truncated: outTail.truncated || errTail.truncated,
+        streamed: echo,
+      });
+    });
+    if (options.input !== undefined && child.stdin !== null) {
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(options.input);
+    }
+  });
+}
+
+/**
+ * Merge per-chunk delegated results: the first non-zero exit code
+ * wins, outputs concatenate in chunk order, and when `tailBytes` is
+ * given each merged stream is bounded to its tail.
+ */
+export function mergeSpawnResults(
+  results: readonly SpawnCaptureResult[],
+  tailBytes?: number,
+): SpawnCaptureResult {
+  let exitCode = 0;
+  let stdout = "";
+  let stderr = "";
+  let truncated = false;
+  let streamed = false;
+  for (const r of results) {
+    if (r.exitCode !== 0 && exitCode === 0) exitCode = r.exitCode;
+    stdout += r.stdout;
+    stderr += r.stderr;
+    truncated = truncated || (r.truncated ?? false);
+    streamed = streamed || (r.streamed ?? false);
+  }
+  if (tailBytes !== undefined) {
+    const o = truncateToTail(stdout, tailBytes);
+    const e = truncateToTail(stderr, tailBytes);
+    stdout = o.text;
+    stderr = e.text;
+    truncated = truncated || o.truncated || e.truncated;
+  }
+  return { exitCode, stdout, stderr, truncated, streamed, chunks: results.length };
+}
+
+/** Spawn one delegated invocation under the requested output mode. */
+export function spawnDelegated(
+  command: string,
+  args: string[],
+  options: SpawnCaptureOptions & { output?: "capture" | "stream" | "tail"; tailBytes?: number },
+): Promise<SpawnCaptureResult> {
+  const mode = options.output ?? "capture";
+  if (mode === "capture") return spawnCapture(command, args, options);
+  return spawnStreaming(command, args, {
+    ...options,
+    echo: mode === "stream",
+    ...(options.tailBytes !== undefined ? { tailBytes: options.tailBytes } : {}),
   });
 }
 

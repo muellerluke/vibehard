@@ -1,12 +1,14 @@
 # Scaling Vibehard to Large Repositories
 
-Status: **Phases 0–3 implemented** (Phase 1 shipped opt-in behind
+Status: **Phases 0–4 implemented** (Phase 1 shipped opt-in behind
 `--fast-select`; Phase 2 lockfile v3 auto-migrates v2 files on the
 next write; Phase 3a–c ship `--jobs` lanes, `--shard`/`--merge`
-artifacts, and `record --incremental`; see the per-phase "results"
-sections below, including a before/after benchmark against the
-pre-scaling baseline under "Phase 3 results").
-Phases 4–5 remain a proposal. This document collects the
+artifacts, and `record --incremental`; Phase 4 ships chunked
+delegation, streaming/bounded run output, and file-based Playwright
+discovery; see the per-phase "results" sections below, including a
+before/after benchmark against the pre-scaling baseline under
+"Phase 3 results").
+Phase 5 remains a proposal. This document collects the
 performance analysis and the phased plan for making `vibehard` usable in
 repositories with thousands of e2e tests and thousands of source files.
 It is a companion to [MANIFEST.md](MANIFEST.md), whose Stage 7
@@ -947,6 +949,87 @@ Gate: a generated suite whose selected set exceeds the argv budget
 runs to completion with identical results to one unchunked run
 (where the platform permits), and `proveFilter` failures still fall
 back to a full run.
+
+#### Phase 4 results (implemented, measured 2026-10-23)
+
+Implemented in `packages/vibehard/src/verifier/delegation.ts` (new:
+`ARGV_BUDGET_BYTES` = 24 KiB, `argvBytes`, `groupRunnableByFile`,
+`packChunks`), the three `*-runner.ts` drivers (`planPlaywrightChunks`,
+`planCypressChunks`, `planPuppeteerChunks`), and
+`packages/vibehard/src/verifier/servers.ts` (`spawnStreaming`,
+`spawnDelegated`, `mergeSpawnResults`, `truncateToTail`). No lockfile,
+config, or `INDEXER_VERSION` change; the budget is a code constant
+(deliberately not config, so `configHash` is untouched), overridable
+only programmatically via `argvBudgetBytes` for tests.
+
+- **Chunking.** Playwright: fully selected files collapse to bare
+  positionals, partial files to `file:line`, packed under the budget
+  counting the fixed command prefix; `proveFilter` proves per chunk
+  and compares the union, so the proof obligation is unchanged.
+  Selected runs gain an optional `discovered` driver input (without
+  it nothing is ever claimed whole-file). Cypress: fully selected
+  specs chunk separately with no title filter — the `VIBEHARD_ONLY`
+  filter matches titles across every spec in an invocation, so
+  mixing would be wrong — and partial specs pack counting both
+  `--spec` and the encoded title payload, which the proposal did not
+  name and which is in fact the first ceiling hit (≈78 KB at 1,000
+  tests, already past the Windows limit, versus ≈23 KB of Playwright
+  positionals). Full (unselected) Cypress runs chunk their spec list
+  too. Puppeteer: per-file invocations as before, titles now split
+  when the `--test-name-pattern` would exceed the budget; cross-file
+  concurrency was not added (same shared-resource reasoning that
+  makes `--jobs` opt-in). Every chunk runs even when an earlier one
+  fails (first non-zero exit wins): fail-fast would skip proven
+  tests. A single indivisible test over budget fails closed with a
+  usage error rather than delegating truncated arguments.
+- **Streaming.** Plain delegated runs take an output mode:
+  `capture` (programmatic default, whole output as before),
+  `stream` (tee live to the parent streams, retain a 64 KiB tail per
+  stream), or `tail` (bounded tail, no echo). The CLI `test` command
+  uses `stream` for text output and `tail` under `--json`; results
+  report `truncated`/`streamed`/`chunks`, and the text report never
+  re-prints streamed output. Observation runs stay captured.
+  `spawnCapture` now Buffer-joins stderr like stdout.
+- **Discovery.** Playwright `--list` writes its JSON report to a
+  per-call temp file via `PLAYWRIGHT_JSON_OUTPUT_FILE` (which takes
+  precedence over the name/dir variables) and parses from disk; a
+  user-set value is overridden for that spawn only. The *discovery
+  cache* was measured and rejected for this phase: there is still no
+  large-scale Playwright `--list` baseline showing it dominating
+  after the file change (selection presets use Puppeteer static
+  discovery; `record-smoke` discovery was 800 ms for 10 tests), and
+  its invalidation surface is the riskiest part of the sketch.
+  Revisit only with a profile that shows listing dominating.
+- **Timeouts** are per chunk invocation (1,800 s each); aggregate
+  wall for a multi-chunk selection can now exceed 30 minutes by
+  design, and `framework.run` timing details report the chunk count.
+
+Gate: AT-S08 passes as planner units plus a real tiny-app Playwright
+run whose budget is shrunk to force multiple chunks (chunked and
+unchunked runs execute the identical test IDs; a tampered claimed
+ID surfaces as a `proveFilter` problem, which `testProject` turns
+into the existing full-run fallback) in `test/delegation.test.ts`
+and `test/delegation-chunks.test.ts`, wired into CI's fast and
+verifier+selector jobs. Planner measurements
+(`packages/vibehard/perf/delegation.mjs`, synthetic partial-file
+selections, this machine): at 3,000 selected tests the unchunked
+Playwright argv would be 72,000 bytes (3 chunks after, max 24,576)
+and the Cypress `--spec` + title payload 239,362 bytes (10 chunks,
+max ≈24.5 KB); at 10,000 tests, 240,000 → 10 chunks and 804,729 →
+33 chunks, every chunk within budget with no test dropped.
+Selection perf is unchanged by construction (delegation is not on
+the dry-run path; `smoke` preset re-measured in line with Phase 3).
+CI is Linux-only, so the Windows ceiling itself is validated by the
+byte-budget arithmetic and planner tests, not by spawning at the
+real limit.
+
+Verification note: one full parallel `vitest run` on this machine
+showed 5 failures that all pass when run in CI-shaped groups (every
+test file re-run individually or in its CI group, Cypress after one
+flaky first attempt) — the suite's per-file `npm run build` hooks
+and browser loads race under 29-file parallelism. Recorded here
+because "full suite parallel on a laptop" is not a gate this repo
+has ever claimed; CI groupings are.
 
 ### Phase 5 — Fewer full-run fallbacks
 

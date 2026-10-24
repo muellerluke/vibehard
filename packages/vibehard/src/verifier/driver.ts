@@ -3,6 +3,7 @@ import { cypressDriver } from "./cypress-runner.js";
 import type { ListedTest, RunnableTestRef } from "./listed.js";
 import { playwrightDriver } from "./playwright-runner.js";
 import { puppeteerDriver } from "./puppeteer-runner.js";
+import type { RunOutputMode } from "./delegation.js";
 import type { SpawnCaptureResult } from "./servers.js";
 
 export type FrameworkName = VibehardConfig["framework"];
@@ -31,6 +32,12 @@ export interface FrameworkDriver {
     resolved: ResolvedConfig;
     tests: readonly RunnableTestRef[] | null;
     env: Record<string, string>;
+    /** All discovered tests; enables whole-file delegation collapse. */
+    discovered?: readonly RunnableTestRef[];
+    /** Per-invocation argv byte budget (default `ARGV_BUDGET_BYTES`). */
+    argvBudgetBytes?: number;
+    /** Output handling for the delegated run (default capture). */
+    output?: RunOutputMode;
   }): Promise<SpawnCaptureResult>;
   /**
    * Prove the delegation filter resolves to exactly the selected tests.
@@ -41,6 +48,8 @@ export interface FrameworkDriver {
     rootDir: string;
     resolved: ResolvedConfig;
     tests: readonly RunnableTestRef[];
+    discovered?: readonly RunnableTestRef[];
+    argvBudgetBytes?: number;
   }): Promise<string | null>;
 }
 

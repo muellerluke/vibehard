@@ -3,11 +3,20 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import type { ResolvedConfig } from "./config.js";
+import {
+  ARGV_BUDGET_BYTES,
+  DELEGATED_RUN_TIMEOUT_MS,
+  OUTPUT_TAIL_BYTES,
+  argvBytes,
+  groupRunnableByFile,
+  packChunks,
+  type RunOutputMode,
+} from "./delegation.js";
 import { discoverStaticTests } from "./discovery.js";
 import type { FrameworkDriver } from "./driver.js";
 import { frameworkVersion } from "./lockfile.js";
 import type { ListedTest, RunnableTestRef } from "./listed.js";
-import { spawnCapture, type SpawnCaptureResult } from "./servers.js";
+import { mergeSpawnResults, spawnDelegated, type SpawnCaptureResult } from "./servers.js";
 import { VibehardUsageError } from "./types.js";
 
 /** Env var (Cypress.env) carrying base64url JSON: titlePaths to run. */
@@ -51,6 +60,73 @@ async function listCypressTests(
   });
 }
 
+/** One delegated Cypress invocation's worth of selected tests. */
+export interface CypressChunk {
+  tests: RunnableTestRef[];
+  specs: string[];
+  /** Title filter for this chunk, or null when every spec runs whole. */
+  onlyTitles: string[][] | null;
+}
+
+function cypressChunkCost(
+  tests: readonly RunnableTestRef[],
+  onlyTitles: readonly (readonly string[])[] | null,
+  fixedBytes: number,
+): number {
+  const specs = [...new Set(tests.map((t) => t.file))].sort();
+  const args = ["--spec", specs.join(",")];
+  if (onlyTitles !== null) args.push("--env", `${ENV_ONLY_TITLES}=${encodeOnlyTitles(onlyTitles)}`);
+  return fixedBytes + argvBytes(args);
+}
+
+/**
+ * Plan delegated Cypress invocations under an argv byte budget. The
+ * `VIBEHARD_ONLY` filter matches title paths across every spec in the
+ * invocation, so fully selected specs are chunked separately with no
+ * title filter, and partial specs are packed test-by-test counting
+ * both the `--spec` list and the encoded title payload. A spec's
+ * tests may split across chunks; the spec simply runs again.
+ */
+export function planCypressChunks(
+  tests: readonly RunnableTestRef[],
+  discovered?: readonly RunnableTestRef[],
+  budgetBytes: number = ARGV_BUDGET_BYTES,
+  fixedBytes = 0,
+): CypressChunk[] {
+  const groups = groupRunnableByFile(tests, discovered);
+  const chunks: CypressChunk[] = [];
+
+  const fullGroups = groups.filter((g) => g.fullySelected);
+  const fullUnits = fullGroups.map((g) => ({ tests: g.tests, spec: g.file }));
+  for (const packed of packChunks(
+    fullUnits,
+    budgetBytes,
+    (chunk) => cypressChunkCost(chunk.flatMap((u) => u.tests), null, fixedBytes),
+    (u) => u.spec,
+  )) {
+    chunks.push({
+      tests: packed.flatMap((u) => u.tests),
+      specs: packed.map((u) => u.spec),
+      onlyTitles: null,
+    });
+  }
+
+  const partialTests = groups.filter((g) => !g.fullySelected).flatMap((g) => g.tests);
+  for (const packed of packChunks(
+    partialTests,
+    budgetBytes,
+    (chunk) => cypressChunkCost(chunk, chunk.map((t) => t.titlePath), fixedBytes),
+    (t) => t.testId,
+  )) {
+    chunks.push({
+      tests: [...packed],
+      specs: [...new Set(packed.map((t) => t.file))].sort(),
+      onlyTitles: packed.map((t) => [...t.titlePath]),
+    });
+  }
+  return chunks;
+}
+
 async function runCypress(input: {
   rootDir: string;
   resolved: ResolvedConfig;
@@ -58,6 +134,7 @@ async function runCypress(input: {
   onlyTitles: readonly (readonly string[])[] | null;
   env: Record<string, string>;
   timeoutMs: number;
+  output?: RunOutputMode;
 }): Promise<SpawnCaptureResult> {
   const cli = resolveCypressCli(input.rootDir);
   const args = [cli, "run", "--spec", input.specs.join(",")];
@@ -68,10 +145,12 @@ async function runCypress(input: {
   if (input.onlyTitles !== null) {
     args.push("--env", `${ENV_ONLY_TITLES}=${encodeOnlyTitles(input.onlyTitles)}`);
   }
-  return spawnCapture(process.execPath, args, {
+  return spawnDelegated(process.execPath, args, {
     cwd: input.rootDir,
     env,
     timeoutMs: input.timeoutMs,
+    output: input.output ?? "capture",
+    tailBytes: OUTPUT_TAIL_BYTES,
   });
 }
 
@@ -91,21 +170,75 @@ export const cypressDriver: FrameworkDriver = {
       env,
       timeoutMs: 600_000,
     }),
-  runMany: async ({ rootDir, resolved, tests, env }) => {
+  runMany: async ({ rootDir, resolved, tests, env, discovered, argvBudgetBytes, output }) => {
     if (tests === null) {
       const all = await listCypressTests(rootDir, resolved);
       const specs = [...new Set(all.map((t) => t.relFile))].sort();
-      return runCypress({ rootDir, resolved, specs, onlyTitles: null, env, timeoutMs: 1_800_000 });
+      // A full run still delegates in chunks when its spec list alone
+      // would exceed the budget: chunk over the specs, no title filter.
+      const chunks = packChunks(
+        specs,
+        argvBudgetBytes ?? ARGV_BUDGET_BYTES,
+        (chunk) =>
+          argvBytes([process.execPath, "run"]) +
+          cypressChunkCost(
+            chunk.map((file) => ({ file }) as RunnableTestRef),
+            null,
+            0,
+          ),
+        (s) => s,
+      );
+      const results: SpawnCaptureResult[] = [];
+      for (const chunk of chunks) {
+        results.push(
+          await runCypress({
+            rootDir,
+            resolved,
+            specs: chunk,
+            onlyTitles: null,
+            env,
+            timeoutMs: DELEGATED_RUN_TIMEOUT_MS,
+            ...(output !== undefined ? { output } : {}),
+          }),
+        );
+      }
+      return mergeSpawnResults(
+        results,
+        output === "capture" || output === undefined ? undefined : OUTPUT_TAIL_BYTES,
+      );
     }
-    const refs = tests as readonly RunnableTestRef[];
-    const specs = [...new Set(refs.map((t) => t.file))].sort();
-    return runCypress({
-      rootDir,
-      resolved,
-      specs,
-      onlyTitles: refs.map((t) => t.titlePath),
-      env,
-      timeoutMs: 1_800_000,
-    });
+    const cli = resolveCypressCli(rootDir);
+    const cfg = resolved.config.cypress;
+    const fixed = argvBytes([
+      process.execPath,
+      cli,
+      "run",
+      ...(cfg?.config !== undefined ? ["--config-file", cfg.config] : []),
+      ...(cfg?.browser !== undefined ? ["--browser", cfg.browser] : []),
+    ]);
+    const chunks = planCypressChunks(
+      tests,
+      discovered,
+      argvBudgetBytes ?? ARGV_BUDGET_BYTES,
+      fixed,
+    );
+    const results: SpawnCaptureResult[] = [];
+    for (const chunk of chunks) {
+      results.push(
+        await runCypress({
+          rootDir,
+          resolved,
+          specs: chunk.specs,
+          onlyTitles: chunk.onlyTitles,
+          env,
+          timeoutMs: DELEGATED_RUN_TIMEOUT_MS,
+          ...(output !== undefined ? { output } : {}),
+        }),
+      );
+    }
+    return mergeSpawnResults(
+      results,
+      output === "capture" || output === undefined ? undefined : OUTPUT_TAIL_BYTES,
+    );
   },
 };

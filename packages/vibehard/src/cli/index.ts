@@ -351,6 +351,9 @@ export async function runCli(
         all,
         dryRun,
         timing,
+        // Live framework output for a human at the terminal; bounded
+        // tails for machine-readable output.
+        output: json ? "tail" : "stream",
       });
       return {
         exitCode: result.exitCode,

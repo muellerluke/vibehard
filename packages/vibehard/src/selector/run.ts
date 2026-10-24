@@ -35,6 +35,12 @@ import type {
   TestProjectResult,
 } from "./types.js";
 
+interface RunPlainOptions {
+  discovered?: readonly RunnableTestRef[];
+  argvBudgetBytes?: number;
+  output?: "capture" | "stream" | "tail";
+}
+
 /** Run the framework around the config servers, without observation. */
 async function runPlain(
   rootDir: string,
@@ -42,17 +48,55 @@ async function runPlain(
   driver: FrameworkDriver,
   tests: readonly RunnableTestRef[] | null,
   timer: PhaseTimer = new PhaseTimer(false),
+  runOptions: RunPlainOptions = {},
 ): Promise<SpawnCaptureResult> {
   const servers = await timer.run("servers.start", () => startServers(resolved));
   try {
-    return await timer.run("framework.run", () =>
-      driver.runMany({ rootDir, resolved, tests, env: servers.env }),
+    return await timer.run(
+      "framework.run",
+      () =>
+        driver.runMany({
+          rootDir,
+          resolved,
+          tests,
+          env: servers.env,
+          ...(runOptions.discovered !== undefined ? { discovered: runOptions.discovered } : {}),
+          ...(runOptions.argvBudgetBytes !== undefined
+            ? { argvBudgetBytes: runOptions.argvBudgetBytes }
+            : {}),
+          ...(runOptions.output !== undefined ? { output: runOptions.output } : {}),
+        }),
+      (run) => ({ chunks: run.chunks ?? 1 }),
     );
   } finally {
     await timer.run("servers.stop", async () => {
       await servers.stop().catch(() => []);
     });
   }
+}
+
+function resultOutput(run: SpawnCaptureResult): NonNullable<TestProjectResult["output"]> {
+  return {
+    stdout: run.stdout,
+    stderr: run.stderr,
+    ...(run.truncated !== undefined ? { truncated: run.truncated } : {}),
+    ...(run.streamed !== undefined ? { streamed: run.streamed } : {}),
+    ...(run.chunks !== undefined ? { chunks: run.chunks } : {}),
+  };
+}
+
+function noteChunks(run: SpawnCaptureResult, diagnostics: string[]): void {
+  if ((run.chunks ?? 1) > 1) diagnostics.push(`delegated in ${run.chunks} argv-budget chunks`);
+}
+
+function discoveredRefs(selection: SelectionResult): RunnableTestRef[] {
+  return selection.discovered.map((t) => ({
+    testId: t.testId,
+    file: t.file,
+    line: t.line,
+    title: t.title,
+    titlePath: t.titlePath,
+  }));
 }
 
 function selectedRefs(tests: readonly SelectedTest[]): RunnableTestRef[] {
@@ -95,7 +139,11 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       });
     }
     const discovered = await timer.run("tests.discovery", () => driver.listTests(rootDir, resolved), (tests) => ({ tests: tests.length }));
-    const run = await runPlain(rootDir, resolved, driver, null, timer);
+    const run = await runPlain(rootDir, resolved, driver, null, timer, {
+      ...(options.argvBudgetBytes !== undefined ? { argvBudgetBytes: options.argvBudgetBytes } : {}),
+      ...(options.output !== undefined ? { output: options.output } : {}),
+    });
+    noteChunks(run, diagnostics);
     return finish({
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -104,7 +152,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       rootDir,
       selection: null,
       ran: { mode: "full", testIds: discovered.map((t) => t.testId), frameworkExitCode: run.exitCode, playwrightExitCode: run.exitCode },
-      output: { stdout: run.stdout, stderr: run.stderr },
+      output: resultOutput(run),
       diagnostics,
     });
   }
@@ -136,7 +184,11 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
 
   if (selection.unsafeReasons.length > 0) {
     // Safety falls back to a full run, never to a partial run.
-    const run = await runPlain(rootDir, resolved, driver, null, timer);
+    const run = await runPlain(rootDir, resolved, driver, null, timer, {
+      ...(options.argvBudgetBytes !== undefined ? { argvBudgetBytes: options.argvBudgetBytes } : {}),
+      ...(options.output !== undefined ? { output: options.output } : {}),
+    });
+    noteChunks(run, diagnostics);
     return finish({
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -150,7 +202,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
         frameworkExitCode: run.exitCode,
         playwrightExitCode: run.exitCode,
       },
-      output: { stdout: run.stdout, stderr: run.stderr },
+      output: resultOutput(run),
       diagnostics,
     });
   }
@@ -171,14 +223,29 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
   }
 
   const refs = selectedRefs(selection.selected);
+  const discovered = discoveredRefs(selection);
   const proveFilter = driver.proveFilter;
   const filterProblem =
     proveFilter === undefined
       ? null
-      : await timer.run("filter.prove", () => proveFilter({ rootDir, resolved, tests: refs }));
+      : await timer.run("filter.prove", () =>
+          proveFilter({
+            rootDir,
+            resolved,
+            tests: refs,
+            discovered,
+            ...(options.argvBudgetBytes !== undefined
+              ? { argvBudgetBytes: options.argvBudgetBytes }
+              : {}),
+          }),
+        );
   if (filterProblem !== null) {
     diagnostics.push(`${filterProblem}; falling back to a full run`);
-    const run = await runPlain(rootDir, resolved, driver, null, timer);
+    const run = await runPlain(rootDir, resolved, driver, null, timer, {
+      ...(options.argvBudgetBytes !== undefined ? { argvBudgetBytes: options.argvBudgetBytes } : {}),
+      ...(options.output !== undefined ? { output: options.output } : {}),
+    });
+    noteChunks(run, diagnostics);
     return finish({
       ok: run.exitCode === 0,
       exitCode: run.exitCode === 0 ? 0 : 1,
@@ -192,12 +259,17 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
         frameworkExitCode: run.exitCode,
         playwrightExitCode: run.exitCode,
       },
-      output: { stdout: run.stdout, stderr: run.stderr },
+      output: resultOutput(run),
       diagnostics,
     });
   }
 
-  const run = await runPlain(rootDir, resolved, driver, refs, timer);
+  const run = await runPlain(rootDir, resolved, driver, refs, timer, {
+    discovered,
+    ...(options.argvBudgetBytes !== undefined ? { argvBudgetBytes: options.argvBudgetBytes } : {}),
+    ...(options.output !== undefined ? { output: options.output } : {}),
+  });
+  noteChunks(run, diagnostics);
   return finish({
     ok: run.exitCode === 0,
     exitCode: run.exitCode === 0 ? 0 : 1,
@@ -211,7 +283,7 @@ export async function testProject(options: TestProjectOptions): Promise<TestProj
       frameworkExitCode: run.exitCode,
       playwrightExitCode: run.exitCode,
     },
-    output: { stdout: run.stdout, stderr: run.stderr },
+    output: resultOutput(run),
     diagnostics,
   });
 }
@@ -583,9 +655,13 @@ export function formatTestReport(result: TestProjectResult): string {
   const timing = formatPhaseTimings("timing", result.timing);
   if (timing !== "") lines.push(timing.trimEnd());
   let out = `${lines.join("\n")}\n`;
-  if (result.output !== null) {
+  if (result.output !== null && result.output.streamed !== true) {
+    // Streamed output was already echoed live; do not print it twice.
     if (result.output.stdout !== "") out += result.output.stdout;
     if (result.output.stderr !== "") out += result.output.stderr;
+  }
+  if (result.output?.truncated === true) {
+    out += "[vibehard: framework output truncated to the last 64 KiB per stream]\n";
   }
   return out;
 }

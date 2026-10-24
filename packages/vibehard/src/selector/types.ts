@@ -69,6 +69,14 @@ export interface TestProjectOptions extends SelectOptions {
   all?: boolean;
   /** Report the selection without running anything. */
   dryRun?: boolean;
+  /**
+   * Delegated-run output handling: `capture` (default, whole output in
+   * the result), `stream` (echo live, retain a bounded tail), or
+   * `tail` (retain only a bounded tail, no echo).
+   */
+  output?: "capture" | "stream" | "tail";
+  /** Per-invocation argv byte budget for delegation (default 24 KiB). */
+  argvBudgetBytes?: number;
 }
 
 export interface TestProjectResult {
@@ -88,8 +96,14 @@ export interface TestProjectResult {
     /** @deprecated Alias of `frameworkExitCode` kept for JSON compatibility. */
     playwrightExitCode: number | null;
   } | null;
-  /** Captured framework output when a run happened. */
-  output: { stdout: string; stderr: string } | null;
+  /** Captured (or bounded-tail) framework output when a run happened. */
+  output: {
+    stdout: string;
+    stderr: string;
+    truncated?: boolean;
+    streamed?: boolean;
+    chunks?: number;
+  } | null;
   diagnostics: string[];
   /** Phase timings; present only when timing was requested. */
   timing?: PhaseTiming[];

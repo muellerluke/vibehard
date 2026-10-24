@@ -61,6 +61,12 @@ npm run perf -- --preset record-smoke
 npm run perf -- --preset record-smoke --jobs 4
 ```
 
+Phase 4 delegation chunking is measured at planner level (no
+framework processes) by `node perf/delegation.mjs` after a build: it
+reports unchunked vs chunked argv sizes per framework at
+100–10,000 selected tests and fails if any planned chunk exceeds
+`ARGV_BUDGET_BYTES` or drops a test.
+
 `--no-timing` runs the built CLI without `--timing` and reports
 external wall clock only. It exists to benchmark builds that
 predate the timing flags (with this harness copied in as untracked

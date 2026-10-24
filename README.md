@@ -71,6 +71,13 @@ to full indexing on any inconsistency (see [SCALING.md](SCALING.md)
 Phase 1). Its parse cache lives under the git common dir and can be
 disabled with `VIBEHARD_NO_CACHE=1`.
 
+Delegating a large selected set has no command-line or memory
+ceiling: `vibehard test` splits the run into argv-budget chunks
+(fully selected files are passed whole), proves the filter per
+chunk, streams framework output live in text mode, and keeps only a
+bounded tail under `--json` (see [SCALING.md](SCALING.md) Phase 4).
+The 30-minute run timeout therefore applies per chunk, not per run.
+
 Running plain `playwright test` is unaffected; the adapter only observes
 when invoked through the vibehard CLI. Recording observes each test
 twice and refuses to record a test whose touched set is not

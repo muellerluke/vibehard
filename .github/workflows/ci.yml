@@ -30,6 +30,7 @@ jobs:
           test/indexer.test.ts test/ast-forms.test.ts test/init.test.ts
           test/observer.test.ts test/timing.test.ts test/perf-fixture.test.ts
           test/playwright-adapter.test.ts test/puppeteer-adapter.test.ts
+          test/delegation.test.ts
       - run: npx vibehard --help
   examples:
     runs-on: ubuntu-latest
@@ -38,7 +39,7 @@ jobs:
       matrix:
         include:
           - name: verifier+selector (tiny-app, Playwright)
-            files: test/verifier.test.ts test/selector.test.ts
+            files: test/verifier.test.ts test/selector.test.ts test/delegation-chunks.test.ts
             browsers: playwright
           - name: next-fullstack
             files: test/next-fullstack.test.ts
