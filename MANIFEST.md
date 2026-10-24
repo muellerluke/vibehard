@@ -564,15 +564,16 @@ Hardening:
 - AT-S01: parse-only extraction equals `indexProject` extraction (minus
   `references`) for every source file in the fixtures, examples, and
   `packages/vibehard/src` (`test/parse-parity.test.ts`).
-- AT-S02: `--fast-select` selection equals full-index selection —
-  selected IDs, reasons, changed symbols, unsafe reasons — over a
-  mutation series on `fixtures/tiny-app` including asset, CRLF, and
-  git-ignored-touched cases (`test/fast-select.test.ts`).
-- AT-S03: with `--fast-select`, `vibehard test --dry-run` performs zero
+- AT-S02: default (diff-proportional) selection equals full-index
+  selection — selected IDs, reasons, changed symbols, unsafe
+  reasons — over a mutation series on `fixtures/tiny-app` including
+  asset, CRLF, and git-ignored-touched cases
+  (`test/fast-select.test.ts`).
+- AT-S03: by default, `vibehard test --dry-run` performs zero
   TypeScript `Program` constructions and zero worktree creations
   (asserted via Phase 0 timing phases and `git worktree list`).
 - AT-S04: on the generated `large` fixture (3,000 source files, 3,000
-  tests, K=150), `--fast-select` selection is measured against the
+  tests, K=150), default selection is measured against the
   Phase 0 baseline in SCALING.md; the proposed budgets (≤2 s
   cold-cache, ≤1 s warm, excluding discovery) are recorded there and
   not yet enforced in CI.
@@ -599,7 +600,7 @@ Hardening:
   `test/delegation-chunks.test.ts`).
 - AT-S09: editing a test helper selects exactly the specs that
   transitively import it (reason `test-support-changed`), identically
-  under full and `--fast-select` selection; helpers with no importing
+  under full-index and default selection; helpers with no importing
   spec, deleted or non-source support files, and any
   unresolvable/dynamic import in the test graph still force a full
   run; `record --incremental` on a helper edit re-observes only the

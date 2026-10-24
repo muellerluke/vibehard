@@ -54,7 +54,6 @@ Once the lockfile is recorded, everyday runs select instead of verifying:
 vibehard test                       # working tree vs baseBranch merge-base (or HEAD)
 vibehard test --base main           # compare against an explicit ref
 vibehard test --dry-run             # print the selected tests and why, run nothing
-vibehard test --fast-select         # diff-proportional selection (no full index; opt-in)
 vibehard test --all                 # skip selection, run the full suite
 vibehard explain 'src/lib/cart.ts#Cart.applyCoupon'  # which tests touched a symbol
 vibehard explain 'checkout'         # recorded touched set for a test
@@ -64,12 +63,14 @@ Selection is exact or it does not happen: a config, package, or other
 unmapped change, or a stale lockfile, runs the full suite (exit `3` under
 `--dry-run`). Set `baseBranch` in `vibehard.config` to select against a
 branch by default, and `ignore` globs for paths that may change freely.
-`--fast-select` (or `VIBEHARD_FAST_SELECT=1`) makes `test` and
-`explain` cost proportional to the diff instead of the whole repo —
-same exact result, proven by parity tests, with automatic fallback
-to full indexing on any inconsistency (see [SCALING.md](SCALING.md)
-Phase 1). Its parse cache lives under the git common dir and can be
-disabled with `VIBEHARD_NO_CACHE=1`. A change to a test helper under
+Selection in `test` and `explain` is diff-proportional by default:
+cost scales with the change and the recorded touched sets, not the
+whole repo — same exact result as the full-index algorithm, proven
+by parity tests, with automatic fallback to full indexing on any
+inconsistency (see [SCALING.md](SCALING.md) Phase 1).
+`VIBEHARD_FAST_SELECT=0` forces the full-index reference path. The
+parse cache lives under the git common dir and can be disabled with
+`VIBEHARD_NO_CACHE=1`. A change to a test helper under
 `testDir` selects exactly the specs that statically (transitively)
 import it (reason `test-support-changed`; [SCALING.md](SCALING.md)
 Phase 5); anything the static import graph cannot prove — a helper

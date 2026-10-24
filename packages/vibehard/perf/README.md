@@ -38,17 +38,17 @@ expects exactly that group's specs), `--repetitions N`, `--seed N`,
 overrides such as `--files`, `--spec-files`, `--tests-per-spec`,
 `--touched-per-test`.
 
-Phase 1 (diff-proportional selection) is measured with
-`--fast-select`, which passes the flag to every CLI run and fails
-the benchmark if the fast path falls back to full indexing.
-`--cold-cache` additionally deletes the fixture's parse cache
-(`.git/vibehard-cache`) before every run, so repetitions measure
-cold parses instead of warm cache hits:
+Selection runs measure the default diff-proportional path and fail
+the benchmark if it falls back to full indexing; `--full-select`
+forces the full-index reference algorithm (`VIBEHARD_FAST_SELECT=0`)
+for comparison. `--cold-cache` additionally deletes the fixture's
+parse cache (`.git/vibehard-cache`) before every run, so
+repetitions measure cold parses instead of warm cache hits:
 
 ```bash
 npm run perf -- --preset large
-npm run perf -- --preset large --fast-select
-npm run perf -- --preset large --fast-select --cold-cache
+npm run perf -- --preset large --full-select
+npm run perf -- --preset large --cold-cache
 ```
 
 `record-smoke` generates a small real app (esbuild harness with
@@ -73,7 +73,8 @@ reports unchunked vs chunked argv sizes per framework at
 external wall clock only. It exists to benchmark builds that
 predate the timing flags (with this harness copied in as untracked
 tooling) against current builds, as in the before/after table in
-SCALING.md.
+SCALING.md; combine it with `--full-select` for such builds, since
+default-selection engagement is proven via timing phases.
 
 ## How to read the output
 

@@ -66,7 +66,7 @@ function parseArgs(argv) {
     repetitions: 5,
     seed: 1,
     keep: false,
-    fastSelect: false,
+    fullSelect: false,
     coldCache: false,
     jobs: 1,
     timing: true,
@@ -85,7 +85,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--help") {
       process.stdout.write(
-        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec|support] [--repetitions N] [--seed N] [--out FILE] [--keep] [--fast-select] [--cold-cache] [--jobs N] [--no-timing] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
+        "usage: run-perf.mjs [--preset smoke|default|large|record-smoke] [--scenario none|leaf|shared|spec|support] [--repetitions N] [--seed N] [--out FILE] [--keep] [--full-select] [--cold-cache] [--jobs N] [--no-timing] [--files N] [--spec-files N] [--tests-per-spec N] [--touched-per-test N]\n",
       );
       process.exit(0);
     }
@@ -93,8 +93,8 @@ function parseArgs(argv) {
       opts.keep = true;
       continue;
     }
-    if (arg === "--fast-select") {
-      opts.fastSelect = true;
+    if (arg === "--full-select") {
+      opts.fullSelect = true;
       continue;
     }
     if (arg === "--cold-cache") {
@@ -197,7 +197,7 @@ function printSummary(report) {
   const lines = [];
   const selectionBits =
     report.mode === "selection"
-      ? `, scenario=${report.scenario}, fastSelect=${report.fastSelect}, coldCache=${report.coldCache}, timing=${report.timing}`
+      ? `, scenario=${report.scenario}, fullSelect=${report.fullSelect}, coldCache=${report.coldCache}, timing=${report.timing}`
       : `, jobs=${report.jobs}, timing=${report.timing}`;
   lines.push(`perf ${report.preset} (${report.mode}${selectionBits})`);
   lines.push(
@@ -232,17 +232,17 @@ async function main() {
   const preset = PRESETS[opts.preset];
   const mode = opts.mode ?? (preset.shape === "recordable" ? "record" : "selection");
   if (mode !== "selection" && mode !== "record") throw new Error(`unknown mode: ${mode}`);
-  if (opts.fastSelect && mode !== "selection") {
-    throw new Error("--fast-select applies to selection mode only");
+  if (opts.fullSelect && mode !== "selection") {
+    throw new Error("--full-select applies to selection mode only");
   }
-  if (opts.coldCache && !opts.fastSelect) {
-    throw new Error("--cold-cache requires --fast-select (the full path has no parse cache)");
+  if (opts.coldCache && opts.fullSelect) {
+    throw new Error("--cold-cache requires the default selection path (the full path has no parse cache)");
   }
   if (opts.jobs !== 1 && mode !== "record") {
     throw new Error("--jobs applies to record mode only");
   }
-  if (opts.fastSelect && !opts.timing) {
-    throw new Error("--fast-select engagement is proven via timing phases; drop --no-timing");
+  if (!opts.fullSelect && mode === "selection" && !opts.timing) {
+    throw new Error("default-selection engagement is proven via timing phases; drop --no-timing or pass --full-select");
   }
 
   const outDir = path.join(REPO_ROOT, `.vh-perf-run-${opts.preset}-s${opts.seed}`);
@@ -276,9 +276,8 @@ async function main() {
               "--dry-run",
               ...(opts.timing ? ["--timing"] : []),
               "--json",
-              ...(opts.fastSelect ? ["--fast-select"] : []),
             ],
-            opts.fastSelect ? { VIBEHARD_FAST_SELECT: "1" } : {},
+            { VIBEHARD_FAST_SELECT: opts.fullSelect ? "0" : "1" },
           );
           const selectedIds = (parsed.selection?.selected ?? []).map((t) => t.testId).sort();
           if (expected !== null) {
@@ -292,17 +291,17 @@ async function main() {
           if ((parsed.selection?.unsafeReasons ?? []).length > 0) {
             throw new Error(`selection was unsafe: ${parsed.selection.unsafeReasons.join("; ")}`);
           }
-          if (opts.fastSelect) {
+          if (!opts.fullSelect) {
             const fallback = (parsed.selection?.diagnostics ?? []).find((d) =>
               d.startsWith("fast selection unavailable"),
             );
             if (fallback !== undefined) {
-              throw new Error(`fast selection fell back to full indexing: ${fallback}`);
+              throw new Error(`default selection fell back to full indexing: ${fallback}`);
             }
             const phaseNames = (parsed.selection?.timing ?? []).map((p) => p.name);
             if (!phaseNames.includes("fast.parse.head") || phaseNames.includes("index.head")) {
               throw new Error(
-                `fast selection did not engage (phases: ${phaseNames.join(", ")})`,
+                `default selection did not engage (phases: ${phaseNames.join(", ")})`,
               );
             }
           }
@@ -363,7 +362,7 @@ async function main() {
       generatedAt: new Date().toISOString(),
       preset: opts.preset,
       mode,
-      fastSelect: mode === "selection" ? opts.fastSelect : false,
+      fullSelect: mode === "selection" ? opts.fullSelect : false,
       coldCache: mode === "selection" ? opts.coldCache : false,
       jobs: mode === "record" ? opts.jobs : 1,
       timing: opts.timing,

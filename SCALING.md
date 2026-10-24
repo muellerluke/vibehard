@@ -1,7 +1,8 @@
 # Scaling Vibehard to Large Repositories
 
-Status: **Phases 0–5 implemented** (Phase 1 shipped opt-in behind
-`--fast-select`; Phase 2 lockfile v3 auto-migrates v2 files on the
+Status: **Phases 0–5 implemented** (Phase 1 diff-proportional
+selection is the default; the full-index path remains as fallback
+and parity oracle; Phase 2 lockfile v3 auto-migrates v2 files on the
 next write; Phase 3a–c ship `--jobs` lanes, `--shard`/`--merge`
 artifacts, and `record --incremental`; Phase 4 ships chunked
 delegation, streaming/bounded run output, and file-based Playwright
@@ -613,6 +614,15 @@ git phase can be inflated by main-thread work queued ahead of
 its completion callback). The largest remaining warm term is
 still the 72 MB v2 lockfile parse (≈390 ms of loader time,
 mostly hidden behind subprocess waits) — Phase 2's concern.
+
+Follow-up (2026-10-24): after the one-release opt-in soak, the
+fast path is the default selection algorithm and the
+`--fast-select` CLI flag is removed. `VIBEHARD_FAST_SELECT=0` (or
+programmatic `fastSelect: false`) forces the full-index reference
+algorithm, which is retained as the exception fallback and the
+AT-S02 parity oracle; the perf harness drives it via
+`--full-select`. Historical `--fast-select` spellings below
+describe the opt-in period.
 
 ### Phase 2 — Lockfile v3: interned symbols
 

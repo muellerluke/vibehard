@@ -29,6 +29,7 @@ import {
   type VibehardLockfile,
 } from "../src/index.js";
 import { runCli } from "../src/cli/index.js";
+import { fastSelectEnabled } from "../src/selector/fast-select.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, "../../..");
@@ -453,29 +454,38 @@ describe("fast explain parity", () => {
   }, T);
 });
 
-describe("CLI --fast-select", () => {
-  it("test --dry-run matches without the flag; record rejects it", async () => {
+describe("fastSelectEnabled", () => {
+  it("defaults on; explicit option and env can force the full path", () => {
+    expect(fastSelectEnabled(undefined, {})).toBe(true);
+    expect(fastSelectEnabled(undefined, { VIBEHARD_FAST_SELECT: "1" })).toBe(true);
+    expect(fastSelectEnabled(undefined, { VIBEHARD_FAST_SELECT: "0" })).toBe(false);
+    expect(fastSelectEnabled(undefined, { VIBEHARD_FAST_SELECT: "false" })).toBe(false);
+    expect(fastSelectEnabled(false, { VIBEHARD_FAST_SELECT: "1" })).toBe(false);
+    expect(fastSelectEnabled(true, { VIBEHARD_FAST_SELECT: "0" })).toBe(true);
+  });
+});
+
+describe("CLI default selection", () => {
+  it("test --dry-run is diff-proportional by default and matches the full path; --fast-select is gone", async () => {
     const dir = await makeGitCopy();
     edit(dir, "src/lib/format.ts", (t) =>
       t.replace("(cents / CENTS_PER_DOLLAR)", "(cents / CENTS_PER_DOLLAR + 0)"),
     );
-    const plain = await runCli(["test", "--dry-run", "--json"], { cwd: dir });
-    const fast = await runCli(["test", "--dry-run", "--json", "--fast-select"], { cwd: dir });
-    expect(fast.exitCode).toBe(plain.exitCode);
-    const plainSelection = (
-      JSON.parse(plain.stdout) as { selection: SelectionResult | null }
-    ).selection;
-    const fastSelection = (
-      JSON.parse(fast.stdout) as { selection: SelectionResult | null }
-    ).selection;
-    expect(plainSelection).not.toBeNull();
-    expect(fastSelection).not.toBeNull();
-    expect(comparable(fastSelection as SelectionResult)).toEqual(
-      comparable(plainSelection as SelectionResult),
-    );
+    const cli = await runCli(["test", "--dry-run", "--json", "--timing"], { cwd: dir });
+    expect(cli.exitCode).toBe(0);
+    const cliResult = JSON.parse(cli.stdout) as { selection: SelectionResult | null };
+    expect(cliResult.selection).not.toBeNull();
+    const phaseNames = (cliResult.selection?.timing ?? []).map((p) => p.name);
+    expect(phaseNames).toContain("fast.parse.head");
+    expect(phaseNames).not.toContain("index.head");
+    const full = await selectTests({ rootDir: dir, fastSelect: false });
+    expect(comparable(cliResult.selection as SelectionResult)).toEqual(comparable(full));
 
-    const rejected = await runCli(["record", "--fast-select"], { cwd: dir });
+    const rejected = await runCli(["test", "--dry-run", "--fast-select"], { cwd: dir });
     expect(rejected.exitCode).toBe(3);
-    expect(rejected.stderr).toContain("--fast-select");
+    expect(rejected.stderr).toContain("unknown option --fast-select");
+    const rejectedRecord = await runCli(["record", "--fast-select"], { cwd: dir });
+    expect(rejectedRecord.exitCode).toBe(3);
+    expect(rejectedRecord.stderr).toContain("unknown option --fast-select");
   }, T);
 });

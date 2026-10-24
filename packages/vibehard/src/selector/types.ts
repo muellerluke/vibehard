@@ -57,9 +57,10 @@ export interface SelectOptions {
   /** Collect phase timings into the result. Defaults to `VIBEHARD_PROFILE`. */
   timing?: boolean;
   /**
-   * Use the diff-proportional fast selection path (parse-only, no
-   * TypeScript Program, no base worktree). Defaults to
-   * `VIBEHARD_FAST_SELECT`. Any fast-path failure falls back to the
+   * Use the diff-proportional selection path (parse-only, no
+   * TypeScript Program, no base worktree). This is the default;
+   * `false` (or `VIBEHARD_FAST_SELECT=0`) forces the full-index
+   * reference algorithm. Any fast-path failure falls back to the
    * full-index algorithm with a diagnostic.
    */
   fastSelect?: boolean;
@@ -150,6 +151,6 @@ export interface ExplainOptions {
   rootDir: string;
   configPath?: string;
   query: string;
-  /** Parse only the files the query needs. Defaults to `VIBEHARD_FAST_SELECT`. */
+  /** Parse only the files the query needs (default; `false` forces a full index). */
   fastSelect?: boolean;
 }

@@ -556,7 +556,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     edit(dir, "src/app/api/coupons/route.ts", (t) =>
       t.replace("{ ok: true, code: body.code }", "{ ok: true, code: body.code, via: \"api\" }"));
 
-    const timed = await testProject({ rootDir: dir, dryRun: true, timing: true });
+    const timed = await testProject({ rootDir: dir, dryRun: true, timing: true, fastSelect: false });
     expect(timed.exitCode).toBe(0);
     expect(timed.selection?.timing?.map((p) => p.name)).toEqual(
       expect.arrayContaining([
@@ -587,7 +587,7 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     const lock = timed.selection?.timing?.find((p) => p.name === "lockfile.load");
     expect(lock?.details?.edges).toBeGreaterThan(0);
 
-    const untimed = await testProject({ rootDir: dir, dryRun: true, timing: false });
+    const untimed = await testProject({ rootDir: dir, dryRun: true, timing: false, fastSelect: false });
     expect(untimed.timing).toBeUndefined();
     expect(untimed.selection?.timing).toBeUndefined();
     const strip = (r: TestProjectResult): unknown => {
@@ -602,7 +602,9 @@ describe("Stage 4 selection on fixtures/tiny-app", () => {
     const human = await runCli(["test", "--dry-run", "--timing"], { cwd: dir });
     expect(human.exitCode).toBe(0);
     expect(human.stdout).toContain("timing (selection):");
-    expect(human.stdout).toContain("index.head");
+    // The CLI has no fastSelect option, so this is the default path.
+    expect(human.stdout).toContain("fast.parse.head");
+    expect(human.stdout).not.toContain("index.head");
   }, T);
 });
 

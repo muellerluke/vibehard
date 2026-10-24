@@ -47,14 +47,19 @@ import {
 } from "./select.js";
 import type { SelectionResult, SelectOptions } from "./types.js";
 
-/** Whether fast selection is on: explicit option wins over the env. */
+/**
+ * Whether diff-proportional (fast) selection is on. It is the
+ * default; an explicit option wins over the env, and
+ * `VIBEHARD_FAST_SELECT=0`/`false` forces the full-index reference
+ * algorithm (the parity oracle and emergency escape hatch).
+ */
 export function fastSelectEnabled(
   explicit: boolean | undefined,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   if (explicit !== undefined) return explicit;
   const raw = env["VIBEHARD_FAST_SELECT"];
-  return raw === "1" || raw === "true";
+  return raw !== "0" && raw !== "false";
 }
 
 function toPosix(p: string): string {

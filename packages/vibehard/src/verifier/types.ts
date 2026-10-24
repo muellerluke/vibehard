@@ -141,7 +141,7 @@ export interface VerifyProjectOptions {
   incremental?: boolean;
   /** Base ref for `incremental` selection; defaults like `test`. */
   baseRef?: string;
-  /** Use diff-proportional selection for `incremental`. */
+  /** Selection algorithm for `incremental` (diff-proportional by default). */
   fastSelect?: boolean;
   /** Collect phase timings into the result. Defaults to `VIBEHARD_PROFILE`. */
   timing?: boolean;

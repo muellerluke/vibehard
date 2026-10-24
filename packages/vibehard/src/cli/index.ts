@@ -52,9 +52,6 @@ Options:
   --dry-run    test: print the selected tests and reasons without running
   --timing     record/verify/test: report phase timings
                (or set VIBEHARD_PROFILE=1)
-  --fast-select test/explain / record --incremental: diff-proportional
-               selection without a full index (or set
-               VIBEHARD_FAST_SELECT=1); falls back to full indexing
   --jobs <n>   record/verify: observe up to <n> tests concurrently
                (default 1; the app must tolerate <n> instances)
   --shard <i>/<n> record/verify: observe only shard <i> of <n>
@@ -92,7 +89,6 @@ export async function runCli(
   const dryRun = argv.includes("--dry-run");
   const timingFlag = argv.includes("--timing");
   const timing = timingFlag || timingEnabled(undefined);
-  const fastSelectFlag = argv.includes("--fast-select");
   const jobsFlag = argv.includes("--jobs") || argv.some((a) => a.startsWith("--jobs="));
   const mergeFlag = argv.includes("--merge");
   const incrementalFlag = argv.includes("--incremental");
@@ -114,7 +110,6 @@ export async function runCli(
       arg === "--all" ||
       arg === "--dry-run" ||
       arg === "--timing" ||
-      arg === "--fast-select" ||
       arg === "--merge" ||
       arg === "--incremental"
     ) {
@@ -203,9 +198,6 @@ export async function runCli(
     if (timingFlag) {
       return fail(3, "vibehard init: unknown option --timing", cmd);
     }
-    if (fastSelectFlag) {
-      return fail(3, "vibehard init: unknown option --fast-select", cmd);
-    }
     if (rest.some((a) => a.startsWith("-"))) {
       return fail(3, `vibehard init: unknown option ${rest.find((a) => a.startsWith("-"))}`, cmd);
     }
@@ -230,9 +222,6 @@ export async function runCli(
   }
 
   if (cmd === "record" || cmd === "verify") {
-    if (fastSelectFlag && !(cmd === "record" && incrementalFlag)) {
-      return fail(3, `vibehard ${cmd}: unknown option --fast-select`, cmd);
-    }
     if (incrementalFlag && cmd === "verify") {
       return fail(3, "vibehard verify: unknown option --incremental", cmd);
     }
@@ -299,7 +288,6 @@ export async function runCli(
         ...(shardOut !== undefined ? { shardOut } : {}),
         ...(incrementalFlag ? { incremental: true } : {}),
         ...(incrementalFlag && baseRef !== undefined ? { baseRef } : {}),
-        ...(incrementalFlag && fastSelectFlag ? { fastSelect: true } : {}),
         ci: cmd === "verify" && ci,
         timing,
       });
@@ -347,7 +335,6 @@ export async function runCli(
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
         ...(baseRef !== undefined ? { baseRef } : {}),
-        ...(fastSelectFlag ? { fastSelect: true } : {}),
         all,
         dryRun,
         timing,
@@ -398,7 +385,6 @@ export async function runCli(
       const result = await explainProject({
         rootDir: options.cwd ?? process.cwd(),
         ...(configPath !== undefined ? { configPath } : {}),
-        ...(fastSelectFlag ? { fastSelect: true } : {}),
         query: rest[0] ?? "",
       });
       return {
