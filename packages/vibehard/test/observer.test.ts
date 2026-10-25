@@ -208,6 +208,57 @@ describe("range→symbol mapping", () => {
     expect(result.ignoredRanges).toBe(0);
   });
 
+  it("drops whole-class definition ranges so observed sets are Node-version stable", () => {
+    // V8 in Node 20/22 emits an executed function range spanning the
+    // whole class body (the implicit/explicit constructor's range);
+    // Node 23 does not. That container range carries no precision the
+    // member ranges do not, and keeping it makes observed (and thus
+    // touched) sets depend on the recording Node version.
+    const cls = index.symbols.find((s) => s.id === "src/lib/cart.ts#Cart");
+    const addItem = index.symbols.find((s) => s.id === "src/lib/cart.ts#Cart.addItem");
+    expect(cls).toBeDefined();
+    expect(addItem).toBeDefined();
+    if (cls === undefined || addItem === undefined) return;
+    const result = mapRangesToSymbols(
+      [
+        {
+          // Whole-class definition range, as Node 20/22 V8 emits it.
+          file: "src/lib/cart.ts",
+          startOffset: cls.startOffset + "export ".length,
+          endOffset: cls.endOffset,
+          origin: "server",
+        },
+        {
+          file: "src/lib/cart.ts",
+          startOffset: addItem.startOffset,
+          endOffset: addItem.endOffset,
+          origin: "server",
+        },
+        {
+          // A range inside the member span but outside every member
+          // (static-block shape) still attributes to the class.
+          file: "src/lib/cart.ts",
+          startOffset: cartText.indexOf("];", cartText.indexOf("readonly items")) + 2,
+          endOffset: addItem.startOffset,
+          origin: "client",
+        },
+        {
+          // A header point from segment sampling of the definition
+          // range is outside the member span: also dropped.
+          file: "src/lib/cart.ts",
+          startOffset: cls.startOffset + "export class ".length,
+          endOffset: cls.startOffset + "export class ".length + 1,
+          origin: "client",
+        },
+      ],
+      index.symbols,
+    );
+    expect(result.byOrigin.server).toEqual(["src/lib/cart.ts#Cart.addItem"]);
+    expect(result.byOrigin.client).toEqual(["src/lib/cart.ts#Cart"]);
+    expect(result.moduleFallbackRanges).toBe(0);
+    expect(result.ignoredRanges).toBe(0);
+  });
+
   it("fails closed for an executed app script without a source map", () => {
     const script: ScriptInput = {
       url: "http://127.0.0.1/client.js",
@@ -321,6 +372,134 @@ describe("range→symbol mapping", () => {
       { rootDir: TINY_APP, symbols: index.symbols },
     );
     expect(notExecuted.merged).toEqual(["src/app/checkout/page.tsx#CheckoutPage"]);
+  });
+
+  it("does not attribute segments at an executed function's entry start (Istanbul-init leak)", () => {
+    const format = index.symbols.find(
+      (s) => s.id === "src/lib/format.ts#formatPrice",
+    );
+    const checkout = index.symbols.find(
+      (s) => s.id === "src/app/checkout/page.tsx#CheckoutPage",
+    );
+    expect(format).toBeDefined();
+    expect(checkout).toBeDefined();
+    if (format === undefined || checkout === undefined) return;
+    // Istanbul-instrumented webpack chunks carry coverage-object
+    // literals whose map segments carry the locations they describe.
+    // When such a segment coincides with the start of a small
+    // executed helper (the cov-init function), segment sampling must
+    // not attribute the described symbol: the helper ran, the symbol
+    // it describes did not. The helper's own outer range is handled
+    // (and here rejected as spanning sources) by outer remapping.
+    const generated =
+      "function caller(){return helper();}function helper(){return 1;}caller();\n";
+    const helperAt = generated.indexOf("function helper");
+    const map = new GenMapping({ file: "chunk.js" });
+    addMapping(map, {
+      generated: { line: 1, column: 0 },
+      source: "turbopack:///[project]/src/app/checkout/page.tsx",
+      original: { line: checkout.startLine, column: 0 },
+    });
+    addMapping(map, {
+      generated: { line: 1, column: helperAt },
+      source: "turbopack:///[project]/src/lib/format.ts",
+      original: { line: format.startLine + 1, column: 2 },
+    });
+    addMapping(map, {
+      generated: { line: 1, column: helperAt + 10 },
+      source: "turbopack:///[project]/src/app/checkout/page.tsx",
+      original: { line: checkout.startLine, column: 0 },
+    });
+    const result = observeScripts(
+      [
+        {
+          url: "http://127.0.0.1/_next/static/chunks/chunk.js",
+          origin: "client",
+          source: generated,
+          sourceMap: toEncodedMap(map),
+          functions: [
+            {
+              functionName: "",
+              ranges: [{ startOffset: 0, endOffset: generated.length, count: 1 }],
+            },
+            {
+              functionName: "caller",
+              ranges: [{ startOffset: 0, endOffset: generated.length, count: 1 }],
+            },
+            {
+              functionName: "helper",
+              ranges: [{ startOffset: helperAt, endOffset: helperAt + 24, count: 4 }],
+            },
+          ],
+        },
+      ],
+      { rootDir: TINY_APP, symbols: index.symbols },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.merged).toEqual(["src/app/checkout/page.tsx#CheckoutPage"]);
+  });
+
+  it("does not attribute generated glue after the map's last segment to that segment's symbol", () => {
+    const addItem = index.symbols.find(
+      (s) => s.id === "src/lib/cart.ts#Cart.addItem",
+    );
+    const checkout = index.symbols.find(
+      (s) => s.id === "src/app/checkout/page.tsx#CheckoutPage",
+    );
+    expect(addItem).toBeDefined();
+    expect(checkout).toBeDefined();
+    if (addItem === undefined || checkout === undefined) return;
+    // A webpack-style startup arrow after the chunk's last mapping
+    // segment inherits that segment for both endpoints. It executed,
+    // but it is bundler glue — not the addItem code the inherited
+    // segment describes (which here sits under a count-0 block and
+    // therefore did not run).
+    const generated =
+      'function caller(cents){return "$"+(cents/100).toFixed(2);}caller(1299);()=>start();\n';
+    const inlinedAt = generated.indexOf("(cents/100)");
+    const tailAt = generated.indexOf("()=>start");
+    const callerEnd = generated.indexOf(";}caller") + 1;
+    const map = new GenMapping({ file: "chunk.js" });
+    addMapping(map, {
+      generated: { line: 1, column: 0 },
+      source: "turbopack:///[project]/src/app/checkout/page.tsx",
+      original: { line: checkout.startLine, column: 0 },
+    });
+    addMapping(map, {
+      generated: { line: 1, column: inlinedAt },
+      source: "turbopack:///[project]/src/lib/cart.ts",
+      original: { line: addItem.startLine + 1, column: 2 },
+    });
+    const result = observeScripts(
+      [
+        {
+          url: "http://127.0.0.1/_next/static/chunks/chunk.js",
+          origin: "client",
+          source: generated,
+          sourceMap: toEncodedMap(map),
+          functions: [
+            {
+              functionName: "",
+              ranges: [{ startOffset: 0, endOffset: generated.length, count: 1 }],
+            },
+            {
+              functionName: "caller",
+              ranges: [
+                { startOffset: 0, endOffset: callerEnd, count: 1 },
+                { startOffset: inlinedAt, endOffset: inlinedAt + 12, count: 0 },
+              ],
+            },
+            {
+              functionName: "startup",
+              ranges: [{ startOffset: tailAt, endOffset: tailAt + 11, count: 1 }],
+            },
+          ],
+        },
+      ],
+      { rootDir: TINY_APP, symbols: index.symbols },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.merged).toEqual(["src/app/checkout/page.tsx#CheckoutPage"]);
   });
 
   it("excludes runtime internals without failing", () => {

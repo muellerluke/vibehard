@@ -164,7 +164,18 @@ describe("AT-S08: chunked delegation", () => {
     ]);
     const chunked = await testProject({ rootDir: dir, argvBudgetBytes: budget });
     expect(chunked.exitCode, (chunked.output?.stdout ?? "").slice(0, 3000)).toBe(0);
-    expect(chunked.ran?.mode).toBe("selected");
+    // On a full-mode fallback the mode alone says nothing; carry the
+    // selection's own reasons so a CI flake self-explains.
+    expect(
+      chunked.ran?.mode,
+      JSON.stringify({
+        unsafeReasons: chunked.selection?.unsafeReasons,
+        diagnostics: [
+          ...(chunked.selection?.diagnostics ?? []),
+          ...chunked.diagnostics,
+        ],
+      }),
+    ).toBe("selected");
     expect([...(chunked.ran?.testIds ?? [])].sort()).toEqual(expected);
     expect(chunked.output?.chunks ?? 0).toBeGreaterThanOrEqual(2);
     expect(chunked.diagnostics.join("\n")).toContain("argv-budget chunks");

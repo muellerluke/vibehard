@@ -40,6 +40,32 @@ export function mapRangesToSymbols(
   for (const symbol of symbols) {
     if (symbol.kind === "module") moduleByFile.set(symbol.file, symbol);
   }
+  // Member span per class symbol, for recognizing whole-class
+  // definition ranges (below). Grouped by file so this stays a
+  // per-file pass, not classes × symbols.
+  const classMembers = new Map<SymbolId, { firstStart: number; lastEnd: number }>();
+  const byFile = new Map<string, SymbolRecord[]>();
+  for (const s of symbols) {
+    const list = byFile.get(s.file) ?? [];
+    list.push(s);
+    byFile.set(s.file, list);
+  }
+  for (const fileSymbols of byFile.values()) {
+    for (const cls of fileSymbols) {
+      if (cls.kind !== "class") continue;
+      let firstStart = Number.POSITIVE_INFINITY;
+      let lastEnd = Number.NEGATIVE_INFINITY;
+      for (const s of fileSymbols) {
+        if (s.id === cls.id || s.kind === "class" || s.kind === "module") continue;
+        if (s.startOffset < cls.startOffset || s.endOffset > cls.endOffset) continue;
+        firstStart = Math.min(firstStart, s.startOffset);
+        lastEnd = Math.max(lastEnd, s.endOffset);
+      }
+      if (firstStart !== Number.POSITIVE_INFINITY) {
+        classMembers.set(cls.id, { firstStart, lastEnd });
+      }
+    }
+  }
   const sets: Record<CoverageOrigin, Set<SymbolId>> = {
     client: new Set(),
     server: new Set(),
@@ -54,6 +80,25 @@ export function mapRangesToSymbols(
     const symbol =
       findEnclosingSymbol(symbols, range.file, range.startOffset, range.endOffset) ??
       findEnclosingSymbol(symbols, range.file, range.startOffset, range.startOffset + 1);
+    if (symbol?.kind === "class") {
+      // V8 in Node 20/22 emits an executed function range spanning
+      // the whole class body (the constructor's range); Node 23's V8
+      // does not. Remap segment sampling also turns that container
+      // range into point ranges in the header and trailing brace.
+      // All of these lie outside the member span, carry no precision
+      // the member ranges do not, and keeping them makes observed
+      // sets (and therefore recorded touched sets) depend on the
+      // recording Node version — drop them. A class-only range
+      // inside the member span (a static block, a gap between
+      // members) still attributes to the class on every version.
+      const members = classMembers.get(symbol.id);
+      if (
+        members !== undefined &&
+        (range.startOffset < members.firstStart || range.endOffset > members.lastEnd)
+      ) {
+        continue;
+      }
+    }
     if (symbol !== null) {
       sets[range.origin].add(symbol.id);
       continue;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 import {
+  decodedMappings,
   eachMapping,
   FlattenMap,
   originalPositionFor,
@@ -139,6 +140,7 @@ function remapRanges(
       [],
   };
   const generatedLines = new LineTable(generated);
+  const lastSegmentOffset = lastSegmentGenOffset(tracer, generatedLines);
   const originals = new Map<string, LineTable | null>();
   const ranges: ObservedRange[] = [];
   let glue = 0;
@@ -198,6 +200,14 @@ function remapRanges(
       };
     }
     const startOffset = table.offsetFor(start.line, start.column);
+    if (lastSegmentOffset !== null && range.startOffset > lastSegmentOffset) {
+      // The function starts after the map's last segment: start/end
+      // merely inherited that segment. That is generated glue after
+      // the mapped code (e.g. webpack's startup arrow in the entry
+      // chunk tail), not the symbol the last segment belongs to.
+      glue += 1;
+      continue;
+    }
     const endNeedle = generatedLines.positionFor(Math.max(range.startOffset, range.endOffset - 1));
     const end = originalPositionFor(tracer, endNeedle);
     if (end.source !== start.source || end.line === null || end.column === null) {
@@ -261,6 +271,38 @@ function remapRanges(
     }
     const inHost = (offset: number): boolean =>
       hostRanges.some((r) => offset >= r.startOffset && offset < r.endOffset);
+    // Segment starts that coincide with the entry offset of an
+    // executed function *nested inside another executed function*
+    // are definition positions, not statement executions:
+    // outer-range remapping above already handles (or deliberately
+    // rejects, as cross-source glue) that function's range. Sampling
+    // them is how Istanbul coverage-object literals leak — the entry
+    // segment of the memoizing helper nested inside Istanbul's
+    // cov-init function carries a location the coverage data merely
+    // describes, inside a symbol that never ran. A top-level host's
+    // own entry segment is unaffected: it is nested only inside the
+    // synthetic whole-script function.
+    const positives = script.functions
+      .map((fn) => fn.ranges[0])
+      .filter((o) => o !== undefined && o.count > 0);
+    let scriptRange: { startOffset: number; endOffset: number } | null = null;
+    for (const fn of script.functions) {
+      const range = fn.ranges[0];
+      if (range === undefined || fn.functionName !== "" || range.startOffset !== 0) continue;
+      if (scriptRange === null || range.endOffset > scriptRange.endOffset) scriptRange = range;
+    }
+    const functionStarts = new Set<number>();
+    for (const o of positives) {
+      if (o === scriptRange) continue;
+      const nested = positives.some(
+        (p) =>
+          p !== o &&
+          p !== scriptRange &&
+          p.startOffset < o.startOffset &&
+          o.endOffset <= p.endOffset,
+      );
+      if (nested) functionStarts.add(o.startOffset);
+    }
     const seenPoints = new Set<string>();
     try {
       eachMapping(tracer, (mapping) => {
@@ -276,6 +318,7 @@ function remapRanges(
           mapping.generatedColumn,
         );
         if (!isExecuted(generatedOffset) || !inHost(generatedOffset)) return;
+        if (functionStarts.has(generatedOffset)) return;
         const rel = relForSource(mapping.source);
         if (rel === null || !knownFileSet.has(rel)) return;
         const table = originalTable(mapping.source);
@@ -295,6 +338,33 @@ function remapRanges(
     }
   }
   return { ranges, unmappable: null, diagnostics };
+}
+
+/**
+ * Generated offset of the map's last segment, or null when the map
+ * cannot be decoded. Segment lookup for a generated position
+ * inherits the nearest preceding segment, so a function whose span
+ * starts past this offset sits in unmapped glue after the mapped
+ * code and would otherwise attribute to whatever symbol that last
+ * segment describes.
+ */
+function lastSegmentGenOffset(
+  tracer: TraceMap,
+  generatedLines: LineTable,
+): number | null {
+  let decoded: ReturnType<typeof decodedMappings>;
+  try {
+    decoded = decodedMappings(tracer);
+  } catch {
+    return null;
+  }
+  let last: number | null = null;
+  for (let line = 0; line < decoded.length; line += 1) {
+    const segments = decoded[line] ?? [];
+    const tail = segments[segments.length - 1];
+    if (tail !== undefined) last = generatedLines.offsetFor(line + 1, tail[0]);
+  }
+  return last;
 }
 
 /**
